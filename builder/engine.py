@@ -304,16 +304,19 @@ def _iso(d: datetime.date | None) -> str:
 def check_promise_date(
     proposed: object, today: datetime.date, deadline: datetime.date | None, cal: dict
 ) -> dict:
-    """Status order: past -> after_deadline -> moved_to_next_business_day -> ok.
+    """Status order: past -> deadline_unknown -> after_deadline -> moved_to_next_business_day -> ok.
 
-    after_deadline returns the deadline as date. Unparsable input -> status 'invalid'.
+    after_deadline returns the deadline as date. Unparsable input -> status 'invalid'. A None
+    deadline (the policy gave none) -> status 'deadline_unknown' with date '': never 'ok'.
     """
     d = parse_date(proposed)
     if d is None:
         return {"status": "invalid", "date": "", "deadline": _iso(deadline)}
     if d < today:
         return {"status": "past", "date": d.isoformat(), "deadline": _iso(deadline)}
-    if deadline is not None and d > deadline:
+    if deadline is None:
+        return {"status": "deadline_unknown", "date": "", "deadline": ""}
+    if d > deadline:
         return {"status": "after_deadline", "date": deadline.isoformat(), "deadline": _iso(deadline)}
     if not is_business_day(d, cal):
         m = next_business_day_on_or_after(d, cal)
@@ -466,8 +469,12 @@ def floor_for(product: dict, spec: dict) -> float | None:
     return round(v, _decimals(spec)) if v is not None else None
 
 
-def classify_amount(amount: object, full: object, floor: object) -> str:
-    """full | in_range (floor <= a < full) | below_floor | above_full | invalid; cent-exact."""
+def classify_amount(amount: object, full: object, floor: object = None) -> str:
+    """full | in_range (floor <= a < full) | below_floor | above_full | floor_unknown | invalid.
+
+    Cent-exact. A missing floor (None) with an amount below full -> 'floor_unknown': the
+    policy gave no floor, so the amount is never accepted as in_range.
+    """
     a = to_cents(amount)
     f = to_cents(full)
     if a is None or a <= 0 or f is None:
@@ -477,7 +484,9 @@ def classify_amount(amount: object, full: object, floor: object) -> str:
     if a > f:
         return "above_full"
     fl = to_cents(floor)
-    if fl is not None and a < fl:
+    if fl is None:
+        return "floor_unknown"
+    if a < fl:
         return "below_floor"
     return "in_range"
 
@@ -575,8 +584,9 @@ def one_date_for_all(
     """Apply one proposed date to every product, each against its own deadline.
 
     Mode cap_each_to_own_deadline: a date after a product's deadline becomes that deadline
-    (capped True). Mode reject_if_any_after_deadline: such a product gets date ''. No mode
-    in the policy: such a product gets date '' and status 'unresolved' (there is no fallback).
+    (capped True). Mode reject_if_any_after_deadline: such a product gets date '' and, when
+    any product is after its deadline, every other product with a date is blanked too with
+    status 'rejected_other_product_after_deadline'. No mode in the policy: such a product gets date '' and status 'unresolved' (there is no fallback).
     """
     mode = (spec.get("multi_product") or {}).get("one_date_for_all")
     out = []
@@ -600,6 +610,11 @@ def one_date_for_all(
         elif status in ("past", "invalid"):
             d = ""
         out.append({"product_id": _product_id(p, spec), "date": d, "capped": capped, "status": status})
+    if mode == "reject_if_any_after_deadline" and any(x["status"] == "after_deadline" for x in out):
+        for x in out:
+            if x["status"] != "after_deadline" and x["date"] != "":
+                x["date"] = ""
+                x["status"] = "rejected_other_product_after_deadline"
     return out
 
 

@@ -126,6 +126,10 @@ def test_snippet_matches_engine(case: str, spec: dict[str, Any], restricted: boo
         assert facts["p1_name"] == "credit card ending 9015"
 
 
+REJECT_SPEC: dict[str, Any] = copy.deepcopy(SPEC_AB)
+REJECT_SPEC["multi_product"]["one_date_for_all"] = "reject_if_any_after_deadline"
+
+
 def _agreement_calls() -> list[tuple[str, Callable[[dict[str, Any]], object]]]:
     """(label, fn(namespace) -> result); run once with the snippet's namespace, once with the engine."""
     cases: list[tuple[str, Callable[[dict[str, Any]], object]]] = []
@@ -142,6 +146,10 @@ def _agreement_calls() -> list[tuple[str, Callable[[dict[str, Any]], object]]]:
     cases.append(("E3 add_business_days 12", lambda m: m["add_business_days"](TODAY, 12, cal(m))))
     cases.append(("E6", lambda m: m["check_promise_date"](D("2026-10-26"), TODAY, D("2026-11-02"), cal(m))))
     cases.append(("E7", lambda m: m["check_promise_date"](D("2026-11-06"), TODAY, D("2026-10-23"), cal(m))))
+    cases.append(("deadline unknown", lambda m: m["check_promise_date"](D("2026-10-20"), TODAY, None, cal(m))))
+    cases.append(("floor unknown", lambda m: m["classify_amount"](100, 500, None)))
+    cases.append(("reject mode", lambda m: m["one_date_for_all"](
+        D("2026-10-20"), PUB_PRODUCTS["PUB-13"], TODAY, REJECT_SPEC, cal(m, REJECT_SPEC))))
     cases.append(("E11", lambda m: m["last_bd_this_week_or_next"](TODAY, cal(m))))
     cases.append(("E12", lambda m: m["last_bd_this_week_or_next"](D("2026-10-16"), cal(m))))
     cases.append(("E18", lambda m: m["resolve_weekday"](D("2026-10-16"), "friday", "next", cal(m))))

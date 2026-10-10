@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from builder.lint import lint
 from builder.spec import validate_spec
 from builder.trace import Trace
 
@@ -123,7 +124,18 @@ def stage_compile_workflow(ctx: BuildContext) -> str:
 
 
 def stage_lint(ctx: BuildContext) -> str:
-    raise NotImplementedStage()
+    """Lint the compiled workflow; findings go to the trace and never block the build."""
+    if ctx.workflow is None:
+        raise StageSkipped("no workflow: compile_workflow not implemented")
+    findings = lint(ctx.workflow)
+    for f in findings:
+        if f.severity == "error":
+            ctx.trace.error(f"lint: {f.format()}")
+        else:
+            ctx.trace.warn(f"lint: {f.format()}")
+    errors = sum(1 for f in findings if f.severity == "error")
+    ctx.results["lint"] = [f.format() for f in findings]
+    return f"{errors} error(s), {len(findings) - errors} warning(s)"
 
 
 def stage_dry_run(ctx: BuildContext) -> str:

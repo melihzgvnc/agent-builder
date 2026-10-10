@@ -578,3 +578,37 @@ def test_missing_one_date_mode_is_unresolved() -> None:
 def test_fill_template_missing_slots() -> None:
     assert fill_template("a {x} b {y}", {"x": "1"}) == "a 1 b "
     assert fill_template("{{lit}} {x}", {}) == "{lit} "
+
+
+def test_reject_if_any_after_deadline_blanks_every_product() -> None:
+    cal = make_calendar(GAP_SPEC)
+    rejecting = copy.deepcopy(GAP_SPEC)
+    rejecting["multi_product"]["one_date_for_all"] = "reject_if_any_after_deadline"
+    r = one_date_for_all(D("2026-10-20"), GAP_PRODUCTS, TODAY, rejecting, cal)
+    assert [(x["product_id"], x["date"], x["status"], x["capped"]) for x in r] == [
+        ("x1", "", "after_deadline", False),
+        ("x2", "", "rejected_other_product_after_deadline", False),
+    ]
+    # Nobody is over the deadline: dates stay.
+    ok = one_date_for_all(D("2026-10-16"), GAP_PRODUCTS, TODAY, rejecting, cal)
+    assert [(x["date"], x["status"]) for x in ok] == [("2026-10-16", "ok")] * 2
+    # The cap mode is unchanged: the other product keeps its date.
+    capped = copy.deepcopy(GAP_SPEC)
+    capped["multi_product"]["one_date_for_all"] = "cap_each_to_own_deadline"
+    r = one_date_for_all(D("2026-10-20"), GAP_PRODUCTS, TODAY, capped, cal)
+    assert [(x["date"], x["status"]) for x in r] == [("2026-10-19", "after_deadline"), ("2026-10-20", "ok")]
+
+
+def test_classify_amount_floor_unknown() -> None:
+    assert classify_amount(100, 500, None) == "floor_unknown"
+    assert classify_amount(100, 500) == "floor_unknown"
+    assert classify_amount(500, 500) == "full"
+    assert classify_amount(900, 500) == "above_full"
+    assert classify_amount(0, 500) == "invalid"
+
+
+def test_check_promise_date_deadline_unknown() -> None:
+    r = check_promise_date(D("2026-10-20"), TODAY, None, CAL)
+    assert r == {"status": "deadline_unknown", "date": "", "deadline": ""}
+    assert check_promise_date(D("2026-10-13"), TODAY, None, CAL)["status"] == "past"
+    assert check_promise_date("nope", TODAY, None, CAL)["status"] == "invalid"
