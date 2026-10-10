@@ -846,3 +846,27 @@ def test_sources_mention_no_imports() -> None:
     for src in all_sources(SPEC_AB).values():
         assert "import " not in src
         assert "datetime" not in src
+def test_callback_pre_computes_calendar_when_facts_not_run() -> None:
+    """A third-party caller never reaches the facts node: the hook derives the allowed dates itself."""
+    cal = engine.make_calendar(SPEC_A)
+    cfg = callback_cfg(SPEC_A)
+    cfg.update({
+        "now_var": SPEC_A["call_variables"]["now"],
+        "weekend": sorted(cal["weekend"]),
+        "holidays": sorted(d.isoformat() for d in cal["holidays"]),
+        "days_n": SPEC_A["third_party"]["callback_window"]["days"]["n"],
+    })
+    src = hooks.callback_pre_hook(cfg)
+    for now in (NOW, FRIDAY_NOW, "2026-10-23T10:30", "2026-12-31T10:30"):
+        now_dt = engine.parse_now(now)
+        assert now_dt is not None
+        want = ",".join(d.isoformat() for d in engine.allowed_callback_dates(now_dt.date(), SPEC_A, cal))
+        before = {SPEC_A["call_variables"]["now"]: now}
+        v, out, _ = run(src, dict(before), config={"body": {"date": now_dt.date().isoformat(), "time": "23:00"}})
+        assert v["callback_dates"] == want
+        assert v["today"] == now_dt.date().isoformat()
+        assert v["now_time"] == now[11:16]
+    # a valid time on an allowed date passes without the facts node
+    d = engine.allowed_callback_dates(engine.parse_now(NOW).date(), SPEC_A, cal)[-1].isoformat()
+    v, out, _ = run(src, {SPEC_A["call_variables"]["now"]: NOW}, config={"body": {"date": d, "time": "11:00"}})
+    assert out["body"] == {"date": d, "time": "11:00"} and v["callback_state"] == ""

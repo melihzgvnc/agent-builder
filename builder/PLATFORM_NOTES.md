@@ -19,7 +19,7 @@ Generic facts about the workflow platform, found by driving tiny workflows throu
 - Design consequence: compute the final outcome and reason in code nodes or hooks (`vars['final_outcome']`, `vars['final_reason']`) and let the close tool's pre-hook copy them into the body. The model need not fill them.
 - Fallback if this ever fails: close outcome as an enum the model fills from a code-computed reason list written in `task_message`.
 
-## Q3. `code_exec` as a model-called tool: UNTESTED
+## Q3. `code_exec` as a model-called tool: UNTESTED (still; the compiler does not use it)
 - Chat service was down (503/504) when this was due. Driver is ready: `scripts/spikes/spike3_model_tools.py`.
 - Fallback design: do not use `code_exec` as a model tool. Use post-hooks / pre-hooks on `api_call` tools and `code` nodes only.
 
@@ -31,12 +31,12 @@ Generic facts about the workflow platform, found by driving tiny workflows throu
 - Code must rebuild the list: loop `i = 0, 1, ...` while `vars.get(prefix + '.%d.id' % i)` is not None. Keep a per-field `int()` / `float()` guard. Only fields present in the response get keys (optional fields are simply absent).
 - Also in `vars` after a node: `<node>_response.status`, `.message`, `.status_code`, `.header.<Name>`, `<node>_status_code`, `<node>_success_count`, `<node>.current_turns`, `<node>.total_turns`.
 
-## Q5. Tool-level `response_mapping` / counters -> transition: UNTESTED
+## Q5. Tool-level `response_mapping` / counters -> transition: CONFIRMED (first practice run)
 - Not reached before the chat outage. Driver ready (`spike3_model_tools.py`, modes a and b).
 - Fallback / design: the closing path is "close tool result -> variable -> transition to an `end_call` node". Check it first in the first practice run. Test both the mapped variable and the flattened `<tool>_response.data.<key>` in an OR group, and also `<tool>_success_count` greater than 0.
 - Keep a code-node route as a backup: have the pre-hook or a code node set a string flag and route on that.
 
-## Q6. Post-hook `what_to_do_next`, pre-hook override of model fields: UNTESTED
+## Q6. Post-hook `what_to_do_next`, pre-hook override of model fields: CONFIRMED (first practice run)
 - Not reached before the outage. (Q1 already shows a pre-hook can overwrite request body fields; only the model-called-tool case is untested.)
 - Design: force ids from code in the pre-hook (`config['body']['id_field'] = vars[...]`) and add `result['data']['what_to_do_next']` in the post-hook. Check in the first practice run.
 
@@ -50,3 +50,24 @@ Generic facts about the workflow platform, found by driving tiny workflows throu
 - Flattened result keys for `pre_actions` nodes use the NODE name (`<node>_response.*`), not the tool name.
 - `function_call_start` args for `api_call` show the full final request. This is the ground truth for what a pre-hook produced.
 - The workspace list route returned 3 workflows after the spikes.
+
+## First practice run (10 simulated calls, built agent; evidence from transcripts and the bank ledger)
+Status per item: confirmed / refuted / partial.
+
+- Q5 transition after a tool result: CONFIRMED. After the last identity tool result the route fired in the same turn (0.01 s later). All three alternatives were true at once: the hook-written variable (`identity_state == 'verified'`), the flattened `<tool>_response.data.<key> == 'true'`, and the mapped variable. Counters (`<tool>_failure_count`, `<tool>_success_count`) are evaluated; a booleans-as-string compare needs `'true'`.
+- Q6 post-hook `what_to_do_next`: CONFIRMED. The post-hook text for the recorded case reached the model and it said the mandated sentence word for word, then called the `transition_to_<node>` tool in the same message.
+- Q6 pre-hook override of model-called fields: CONFIRMED. A forced product id and a clamped date/amount were what the bank received; an invalid callback date/time was blanked (`""`) and the bank rejected it. The blanked request still shows in the ledger call log (args `date ""`, `time ""`, `ok false`), so a scorer that counts failed calls sees it.
+- Hook order (pre-hook reads variables from earlier post-hooks and code nodes): CONFIRMED. The finalize code node read the per-product state written by the post-hook of the model-called tool (`closing_ready`, `p<k>_promise`, `transfer_reason` all present in the variable table before it ran).
+- Product list reconstruction: CONFIRMED. Flattened `<node>_response.data.products.<i>.<field>` keys appeared with the NODE name as prefix; the facts node rebuilt the list and `products_state` became `known`.
+- First node is a conversation node: CONFIRMED. The run starts with `node_enter` of the initial conversation node and the opening line, then the chain runs. In the chat route the first user message produced the first assistant question; no pre-action was lost.
+- Closing path writes the ledger (Q2 on a real build): CONFIRMED for the transport, with one finding. The lifecycle close tool ran after `end_call` in every call, 0.5 to 1 s after `call_ended`, and the ledger held exactly the values in its body (a no-callback exit gave the no-callback pair; a hardship exit gave the hardship pair). Finding: when the extracted spec has no `closing.aggregation`, the finalize code node falls to the fixed fallback pair (verified: the no-promise/refused pair) even when a promise or a transfer exists (`AGG_SPEC` is `{'closing': {'aggregation': {}}}`). 6 of 8 failing calls lost on this alone. The platform was not at fault. The extraction prompt now asks for `aggregation` also for one product.
+- end_call / turn endings: PARTIAL. In simulation no turn hung (slowest turn 5 s). In the chat route the turn that ends the call returned a fast 502 (3 to 5 s) instead of a 504 hang, in 2 of 3 attempts, and one 502 appeared on a normal turn. After a 502 the engine replayed the last user turn: the model-called tool ran again (a second create-promise call came back as a failure), and the close tool fired twice with different pairs. Treat 502/504 on the chat route as unsafe to retry; do not resend the turn.
+- Lifecycle close tool in the chat route: the close request is written to the ledger up to 15 s or more after the call ends (a read 8 s after the end showed no outcome; a later read showed it). Wait 30 s before reading the ledger after a chat call.
+- Smoke test pollution (placeholder customer id): CONFIRMED harmless. The bank answers "unknown customer_id for this team key" and keeps no record.
+- Hooks without imports: CONFIRMED. `float()`, `int()`, string slicing, `str.split` and nested functions ran in hooks and code nodes; no hook fell back to the unchanged request.
+- `end_call` node with `message_mode: none` and terminal function names: PARTIAL. `endedReason` was the assistant-ended value on every end. The spoken-message variant was not seen in these runs.
+- Gated exit / gated finalize routing back to the source node: UNTESTED (no call hit a gate that blocked).
+
+### Findings that are bugs in the built agent (not platform behaviour)
+- Callback before verification: the calendar variables (`callback_dates`) are written by the facts node, which runs only after the account lookup. A third-party caller never reaches it, so the callback pre-hook saw an empty list, blanked every date/time, and the bank rejected both tries ("Allowed dates: ." in the model's text). Needs the calendar computed before the first conversation node can offer a callback (builder change, not yet made).
+- `transition_to_*` tool names and a model that says "verified" after one passed question: model behaviour, not platform.

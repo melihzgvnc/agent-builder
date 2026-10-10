@@ -419,7 +419,15 @@ def _third_party_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
             text += " (the end time is not included)"
         if cw.must_be_after_now:
             text += "; the time must be later than now"
-        lines.append(text + ". The exact dates are in the date facts.")
+        lines.append(text + ".")
+        now_var = spec.call_variables.now if spec.call_variables is not None else ""
+        if now_var:
+            hol = ", ".join(spec.calendar.holidays) if spec.calendar is not None and spec.calendar.holidays else ""
+            weekend = ", ".join(spec.calendar.weekend_days) if spec.calendar is not None else ""
+            lines.append(
+                "The current date and time is " + placeholder(now_var) + " (YYYY-MM-DDTHH:MM). Work out the dates from it, never from any other clock."
+                + (" Business days exclude " + weekend + (" and the holidays " + hol if hol else "") + "." if weekend or hol else "")
+            )
         if cb_tool:
             f = ctx.fields.get("schedule_callback", {})
             lines.append(
@@ -617,6 +625,8 @@ def _amount_lines(spec: PolicySpec) -> list[str]:
             text += " (" + _times(tm.offer_floor_times) + ")"
         if tm.say_rest_stays_overdue:
             text += " and say the rest stays overdue"
+        if tm.offer_floor_times == 1:
+            text += ". Make that offer in one message, with its date from the product facts, and never offer the floor amount again afterwards"
         if tm.refusal_is_flat_refusal:
             text += ". A refusal of the floor amount is a flat refusal"
         lines.append(text + ".")
@@ -651,7 +661,10 @@ def _date_lines(spec: PolicySpec) -> list[str]:
             text += ", and not after the product's latest promise date"
         lines.append(text + ". Business days exclude " + ", ".join(cal.weekend_days) + " and the holidays in the date facts.")
         if pr.on_non_business_day == "offer_next_business_day":
-            lines.append("If the customer names a day that is not a business day, offer the next business day.")
+            lines.append(
+                "If the customer names a day that is not a business day (a weekend day or a listed holiday), say so and offer the next business day "
+                "after it from the date facts. Do not offer the latest promise date instead."
+            )
         elif pr.on_non_business_day == "reject":
             lines.append("If the customer names a day that is not a business day, do not accept it and ask for another day.")
         if pr.on_after_deadline == "offer_deadline":
@@ -673,7 +686,7 @@ def _date_lines(spec: PolicySpec) -> list[str]:
         lines.append("The weeks start on " + cal.week_starts_on + ". The date facts list what each of these means today.")
     vp = cal.vague_period
     if vp is not None:
-        text = "If the customer gives a vague period such as 'next month'"
+        text = "If the customer gives a vague period such as 'next month' (a named day is not vague, even when it is not a business day)"
         if vp.ask_exact_day_times is not None:
             text += ", ask for an exact day (" + _times(vp.ask_exact_day_times) + ")"
         then = {
@@ -755,6 +768,10 @@ def _promise_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
         lines.append("Say a promise is recorded only after the tool result says ok true.")
     if pr.retries_on_failure is not None:
         lines.append("If the tool result says the promise was not recorded, do what it says.")
+        lines.append(
+            "If the tool call itself fails (an error or no result), nothing was recorded. Say nothing about it yet and call the tool again "
+            "with exactly the same values, " + _times(pr.retries_on_failure) + " at most. Only after the retries also fail, give up."
+        )
     if pr.success_sentence:
         lines.append("After the promise is recorded, say: " + _quote(_fill(pr.success_sentence, spec)))
     if pr.on_failure is not None and pr.on_failure.say:

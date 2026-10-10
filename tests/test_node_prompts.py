@@ -288,3 +288,11 @@ def test_spec_roundtrip_unchanged_by_prompt_builders(spec: Any) -> None:
     node_prompts.identity_task(spec, id_ctx(spec))
     node_prompts.negotiate_task(spec, neg_ctx(spec))
     assert spec_to_dict(spec) == before
+def test_identity_task_gives_the_clock_when_a_callback_can_be_booked() -> None:
+    text = node_prompts.identity_task(SPEC_A, id_ctx(SPEC_A))
+    assert placeholder(SPEC_A.call_variables.now) in text
+    assert "date facts" not in text
+def test_negotiate_task_retries_a_failed_promise_call_and_holds_dates_rules() -> None:
+    text = node_prompts.negotiate_task(SPEC_A, neg_ctx(SPEC_A))
+    assert "call the tool again with exactly the same values" in text
+    assert "Do not offer the latest promise date instead" in text

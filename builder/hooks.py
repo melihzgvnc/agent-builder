@@ -40,8 +40,11 @@ DEFAULT_TEXTS: dict[str, str] = {
         "The answer was rejected or could not be read. It was not counted as a wrong answer. "
         "Ask for it again in the required format."
     ),
-    "wrong": "That answer was not accepted.",
-    "next_question": "That answer was accepted. Ask the next security question.",
+    "wrong": "That answer was not accepted. The customer is not verified. Do not say they are; ask that question again.",
+    "next_question": (
+        "That answer was accepted. The customer is not verified yet. Ask the next security question, "
+        "or ask again a question whose answer was not accepted. Do not say the customer is verified."
+    ),
     "verified": "All security questions are passed. Ask nothing more; the call moves on by itself.",
     "failed": "Verification failed. Ask nothing more; the call moves on by itself.",
     "cb_reask": (
@@ -395,7 +398,50 @@ def verify_post_hook(cfg: dict) -> str:
 # Callback
 # ---------------------------------------------------------------------------------------------
 
-_CB_PRE_BODY = """
+_CB_CALENDAR = """
+def _to_days(y, m, d):
+    if m <= 2:
+        y = y - 1
+    era = (y if y >= 0 else y - 399) // 400
+    yoe = y - era * 400
+    mp = m - 3 if m > 2 else m + 9
+    doy = (153 * mp + 2) // 5 + d - 1
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    return era * 146097 + doe - 719468
+def _from_days(z):
+    z = z + 719468
+    era = (z if z >= 0 else z - 146096) // 146097
+    doe = z - era * 146097
+    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365
+    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)
+    mp = (5 * doy + 2) // 153
+    d = doy - (153 * mp + 2) // 5 + 1
+    m = mp + 3 if mp < 10 else mp - 9
+    y = yoe + era * 400 + (1 if m <= 2 else 0)
+    return str(y).zfill(4) + '-' + str(m).zfill(2) + '-' + str(d).zfill(2)
+def _is_biz(z):
+    return (z + 3) % 7 not in WEEKEND and _from_days(z) not in HOLIDAYS
+if not GAPS and NOW_VAR != '' and _s(vars.get('callback_dates')) == '':
+    ns = _s(vars.get(NOW_VAR)).strip()
+    if len(ns) >= 16 and ns[4] == '-' and ns[7] == '-' and ns[10] in ('T', ' ') and ns[13] == ':' and ns[:4].isdigit() and ns[5:7].isdigit() and ns[8:10].isdigit() and ns[11:13].isdigit() and ns[14:16].isdigit():
+        z0 = _to_days(int(ns[:4]), int(ns[5:7]), int(ns[8:10]))
+        allowed = [_from_days(z0)]
+        zx = z0
+        for _i in range(min(max(NDAYS, 0), 60)):
+            zx = zx + 1
+            guard = 0
+            while not _is_biz(zx) and guard < 400:
+                zx = zx + 1
+                guard = guard + 1
+            allowed.append(_from_days(zx))
+        vars['callback_dates'] = ','.join(allowed)
+        if _s(vars.get('today')) == '':
+            vars['today'] = allowed[0]
+        if _s(vars.get('now_time')) == '':
+            vars['now_time'] = ns[11:16]
+"""
+
+_CB_PRE_BODY = _CB_CALENDAR + """
 body = config.get('body')
 if isinstance(body, dict):
     raw_date = _s(body.get(F_DATE)).strip()
@@ -479,6 +525,10 @@ def callback_pre_hook(cfg: dict) -> str:
         ("INCL", bool(cfg.get("inclusive"))),
         ("AFTER_NOW", bool(cfg.get("must_be_after_now"))),
         ("GAPS", gaps),
+        ("NOW_VAR", str(cfg.get("now_var") or "")),
+        ("WEEKEND", [int(x) for x in cfg.get("weekend") or []]),
+        ("HOLIDAYS", [str(x) for x in cfg.get("holidays") or []]),
+        ("NDAYS", cfg.get("days_n") if isinstance(cfg.get("days_n"), int) else 0),
     ]
     return _assemble("pre", consts, [_H_BASE_NODEC], _CB_PRE_BODY)
 
