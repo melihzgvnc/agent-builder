@@ -286,3 +286,20 @@ def test_variant_3_structure() -> None:
     # Identity: 3 questions
     identity_questions = v3.get("identity", {}).get("questions", [])
     assert len(identity_questions) == 3, f"Variant 3 should have 3 identity questions, got {len(identity_questions)}"
+
+
+@pytest.mark.parametrize("variant_key", sorted(SPEC_FILES))
+def test_variant_compiles_to_real_workflow(variant_key: str) -> None:
+    """Each variant spec compiles (no CompileError, so never the generic fallback), lints clean and passes selfchecks."""
+    from builder import selfcheck
+    from builder.compiler import compile_workflow
+    from builder.lint import lint
+    from builder.spec import spec_to_dict
+
+    openapi = json.loads((REPO_ROOT / "tools" / "openapi.json").read_text(encoding="utf-8"))
+    spec = load_spec_variant(variant_key)
+    workflow, report = compile_workflow(spec, openapi)
+    assert workflow.get("nodes")
+    assert [f.format() for f in lint(workflow) if f.severity == "error"] == []
+    result = selfcheck.run_selfchecks(workflow, spec_to_dict(spec), openapi, report.context)
+    assert [c.format() for c in result.failed] == []

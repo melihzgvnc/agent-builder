@@ -91,6 +91,20 @@ So build something that reads a brief, not something that knows this one. Whatev
 - Your builder must leave a trace of each run: start and end time, each model call it made (model and a one-line purpose), what it created on Freya, and any test it ran on its own agent. Plain text, no fixed format. You submit one trace per final brief.
 - All data here is synthetic. Do not bring real customer data.
 
+## Rehearsal and checks
+
+```bash
+uv run pytest -q                                   # unit tests, including the contamination scan
+uv run python scripts/check_contamination.py       # no brief value in builder/, build.py, scripts/ (exit 1 on a hit)
+uv run python scripts/rehearse.py briefs/brief-a.md [briefs/brief-b.md] [--spec FILE] [--keep]
+```
+
+- `check_contamination.py` derives its banned tokens from the briefs and spec fixtures at run time. Generic hits go in `scripts/contamination_allow.json`, each with a reason; an unused entry fails.
+- `rehearse.py` runs `build.py ... --dry`, prints a per-stage timing table and exits 1 when a stage is over its budget, the build is over 25 minutes, `workflow.json` is missing, or the lint has an error.
+- Stage budgets (seconds) live in `builder/pipeline.py` as `STAGE_BUDGETS`. `TOTAL_BUDGET_S` is 1500 (25 minutes, 5 under the 30 minute rule). `build.py --budget SECONDS` changes the total.
+- A build always writes `workflow.json`, even when extraction falls back, the spec is invalid, a stage crashes or hangs, or the budget runs out (a generic fallback workflow is written then).
+- A `DEGRADED:` line in `trace.log` marks such a build, and `build.py` prints a warning on stderr. The exit code stays 0 unless a stage crashed.
+
 ## When something does not work
 
 - `error code: 1010` in an HTML page: your request has no browser-like `User-Agent`. `freya.py` sets one.

@@ -6,7 +6,7 @@ call_variables: names of the variables every call starts with (customer id, curr
 
 account_fields: the field names the account tool returns for each product (product id, product type, days late, the key of the products list). Each value is the exact key as it appears in the account tool response in the tool API summary (look the field up there by meaning), never a concept name you made up.
 
-opening: what the agent says first, words forbidden before identity is verified, whether the rules apply to everyone, the question that confirms who is on the line, which answers count and which do not, how many times to ask, what to do with an unclear answer, and the fixed answers to questions such as "are you an AI" or "is this a scam".
+opening: what the agent says first, words forbidden before identity is verified, whether the rules apply to everyone, the question that confirms who is on the line, which answers count and which do not, how many times to ask, what to do with an unclear answer, and the fixed answers to questions such as whether the caller is automated or whether the call is genuine.
 
 third_party: what to do when someone other than the customer answers: what may be said, whether to ask for a better time, the callback window (days rule, hours, inclusive or not, must be after now), how many re-asks, outcomes for each branch (callback scheduled, no valid time, wrong number, customer deceased with the required sentence).
 
@@ -24,13 +24,15 @@ promise_rules: the earliest and latest promise date rules, business-day requirem
 
 persuasion: the ordered attempts (index, which date rule, which amount rule, which bands), what counts as a flat refusal, whether a customer proposal is ever a refusal, not repeating a refused offer, and the outcome when attempts are exhausted.
 
-intents: things the customer may say at any time (dispute, already paid, hardship, wants a human, wants a restructure, asks to stop calls, and similar). Each has a name, trigger phrases, ordered actions, precedence (lower number is checked first, default 100), whether it applies before and after verification, and how many times it must occur before the action. Action types are limited to the schema enum; use `close` with an outcome and reason from the outcome table.
+intents: things the customer may say at any time (for example disputing the debt, saying it is already settled, financial difficulty, asking for a person, asking to change the terms, asking to stop calls, and similar). Each has a name, trigger phrases, ordered actions, precedence (lower number is checked first, default 100), whether it applies before and after verification, and how many times it must occur before the action. Action types are limited to the schema enum; use `close` with an outcome and reason from the outcome table.
 
 closing: `outcome_table` has one row per outcome and reason combination with a plain-language `when` and source references. Also: whether the close tool is always last, exactly one close, whether a goodbye is required and its text, and for several products the aggregation rules (precedence of outcomes, transfer outcome, promise outcome, all-notes-equal rule, first-note rule, default).
 
 multi_product: whether the customer can be late on several products, the maximum, order of handling, whether to state all first, whether to ask about paying everything today first, per-product attempts, one date for all and how a capped deadline is announced, combined read-back, notes for products without a promise and their reasons, what happens on transfer and on a failed promise.
 
-tools: per tool, optional purpose, `field_map` (semantic name to API field name), `allowed_values` (API field name to the list of allowed values, copied from the API) and notes. Use only the tool names that exist in the API summary.
+tools: per tool (use only tool names from the TOOL API block), optional purpose, `field_map`, `allowed_values` and notes. Always fill `field_map` for every tool the documents use. Its keys are these semantic names per tool: verify_identity: customer, question, answer; get_account: customer; create_promise: customer, product, amount, date; add_note: customer, product, reason, text; schedule_callback: customer, date, time; transfer_to_agent: customer, queue; close_call: customer, outcome, reason. Its values must be the exact request field names of that tool in the TOOL API block. `allowed_values` maps an API request field name to the list of allowed values, copied from the API enum.
+
+Keep the output compact: do not repeat the same rule text in several fields beyond what the schema needs, and keep `notes` short.
 
 mandated_sentences: sentences required word for word, with when they are said.
 

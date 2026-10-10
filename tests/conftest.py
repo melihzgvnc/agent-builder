@@ -17,6 +17,22 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+LLM_ENV_VARS: tuple[str, ...] = (
+    "BUILDER_LLM_API_KEY",
+    "OPENROUTER_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "BUILDER_LLM_MODEL",
+    "BUILDER_LLM_BASE_URL",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear every LLM setting so no test (or subprocess it starts) can reach a real model."""
+    for name in LLM_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def repo_root() -> Path:
     """Absolute path of the repository root."""

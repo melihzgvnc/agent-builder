@@ -441,10 +441,10 @@ def _third_party_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
                 )
     wrong = _exit_call(ctx, tp.on_not_customers_number)
     if wrong:
-        lines.append("If the number does not belong to the customer, " + _say_goodbye(spec) + " and call " + wrong + ".")
+        lines.append("If the person says this number is not the customer's, " + _say_goodbye(spec) + " and call " + wrong + ".")
     dec = tp.on_customer_deceased
     if dec is not None:
-        text = "If someone says the customer has died"
+        text = "If the person reports that the customer is deceased"
         if dec.sentence:
             text += ", say " + _quote(_fill(dec.sentence, spec))
         if dec.ask_nothing_else:

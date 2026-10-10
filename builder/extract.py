@@ -21,6 +21,10 @@ PROMPT_DIR: Path = Path(__file__).with_name("extract_prompts")
 STAGES: tuple[str, ...] = ("opening", "third_party", "identity", "debt", "negotiate", "closing", "global")
 DEFAULT_BUDGET_S = 480.0
 MAX_REPAIRS = 3
+COMPILE_REPAIRS = 2
+# Output cap for the whole spec. Decision: the spec is NOT requested in sections (cross-references such as coverage
+# and outcome names make partial output fragile). Instead the prompt asks for compact output and a truncated reply
+# is retried with a "be more compact" hint instead of the same request.
 SPEC_MAX_TOKENS = 20000
 SMALL_MAX_TOKENS = 6000
 MODES: tuple[str, ...] = ("auto", "json")  # forced tool choice is rejected by some providers
@@ -290,6 +294,7 @@ class _Asker:
         max_tokens: int = SMALL_MAX_TOKENS,
     ) -> dict[str, Any]:
         last_err = "no attempt"
+        hint = ""
         for _ in range(3):
             if self.remaining() <= 1:
                 raise LLMBudgetExceeded(f"extraction budget exhausted before '{purpose}'")
@@ -310,7 +315,7 @@ class _Asker:
                 res = self.llm.call(
                     purpose,
                     sys_text,
-                    [{"role": "user", "content": user}],
+                    [{"role": "user", "content": user + hint}],
                     max_tokens=max_tokens,
                     timeout_s=max(5.0, min(self.per_call_s, self.remaining())),
                     **kwargs,
@@ -329,6 +334,11 @@ class _Asker:
             except ValueError:
                 trunc = " (output truncated at max_tokens)" if res.stop_reason == "max_tokens" else ""
                 last_err = f"no usable JSON in reply{trunc}"
+                if res.stop_reason == "max_tokens":
+                    hint = (
+                        "\n\nYour previous reply was cut off. Reply with a more compact JSON object: "
+                        "shorter `notes`, no duplicated text."
+                    )
                 self.mode = "json"
                 continue
             if isinstance(parsed, list):
@@ -582,9 +592,11 @@ def _repair_user(docs: str, spec: Any, errors: list[str]) -> str:
 
 
 def _primary(asker: _Asker, system: str, user: str, docs: str, sources: list[tuple[str, str]],
-             schema: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+             schema: dict[str, Any], report: dict[str, Any],
+             doc: dict[str, Any] | None = None) -> dict[str, Any]:
     raw = asker.ask("extract_spec", system, user, "submit_spec", schema, SPEC_MAX_TOKENS)
     spec = _normalize(raw, sources, schema)
+    _fill_tool_fields(spec, doc)
     errors = validate_spec(spec)
     attempt = 0
     while errors and attempt < MAX_REPAIRS:
@@ -595,6 +607,7 @@ def _primary(asker: _Asker, system: str, user: str, docs: str, sources: list[tup
             SPEC_MAX_TOKENS,
         )
         spec = _normalize(raw, sources, schema)
+        _fill_tool_fields(spec, doc)
         errors = validate_spec(spec)
     report["repairs"] = attempt
     if errors:
@@ -602,6 +615,84 @@ def _primary(asker: _Asker, system: str, user: str, docs: str, sources: list[tup
         report["last_invalid_spec"] = spec
         raise _Degrade(f"spec still invalid after {MAX_REPAIRS} repairs: {errors[:5]}")
     return spec
+
+
+def _fill_tool_fields(spec: dict[str, Any], doc: dict[str, Any] | None, warnings: list[str] | None = None) -> None:
+    """Drop field_map values and allowed_values keys that are not request fields of the tool. Never invents."""
+    if not doc or not isinstance(spec.get("tools"), dict):
+        return
+    ops = _op_schemas(doc)
+    for tool, entry in spec["tools"].items():
+        if tool not in ops or not isinstance(entry, dict):
+            continue
+        fields = {f.split(".")[-1] for f, _ in _flatten(ops[tool][1])}
+        fmap = entry.get("field_map")
+        if isinstance(fmap, dict):
+            for sem, api in list(fmap.items()):
+                if api not in fields:
+                    del fmap[sem]
+                    if warnings is not None:
+                        warnings.append(f"tools.{tool}.field_map: dropped {sem!r} -> {api!r} (not a request field)")
+        allowed = entry.get("allowed_values")
+        if isinstance(allowed, dict):
+            for key in list(allowed):
+                if key not in fields:
+                    del allowed[key]
+                    if warnings is not None:
+                        warnings.append(f"tools.{tool}.allowed_values: dropped {key!r} (not a request field)")
+
+
+def _try_compile(spec: dict[str, Any], doc: dict[str, Any]) -> str | None:
+    """None when the spec compiles to a real workflow, else the error text."""
+    from builder.compiler import compile_workflow
+    from builder.spec import load_spec
+
+    try:
+        compile_workflow(load_spec(copy.deepcopy(spec)), doc)
+    except Exception as e:  # noqa: BLE001 - any compile failure is feedback for the model
+        return str(e) if type(e).__name__ == "CompileError" else f"{type(e).__name__}: {e}"
+    return None
+
+
+_COMPILE_SECTIONS = ("tools", "identity", "call_variables", "amounts")
+
+
+def _compile_repair_loop(asker: _Asker, system: str, spec: dict[str, Any], doc: dict[str, Any],
+                         sources: list[tuple[str, str]], schema: dict[str, Any], warnings: list[str],
+                         trace: Any, report: dict[str, Any]) -> None:
+    """Feed compile errors back to the model (at most COMPILE_REPAIRS times); the spec is kept on any failure."""
+    err = _try_compile(spec, doc)
+    n = 0
+    sections_schema = {"type": "object", "properties": {"sections": {"type": "object"}}, "required": ["sections"]}
+    while err and n < COMPILE_REPAIRS and asker.remaining() > 30:
+        n += 1
+        _add_warning(warnings, trace, f"compile-feedback repair {n}: {err}")
+        current = {k: spec[k] for k in _COMPILE_SECTIONS if k in spec}
+        user = (
+            f"{load_prompt('compile_repair')}\nCOMPILER ERROR:\n{err}\n\nCURRENT SECTIONS:\n"
+            f"{json.dumps(current, ensure_ascii=False)}\n\n{openapi_summary(doc)}"
+        )
+        try:
+            raw = asker.ask(f"extract_compile_repair_{n}", system, user, "submit_sections", sections_schema,
+                            SPEC_MAX_TOKENS // 2)
+            patch = raw.get("sections") if isinstance(raw, dict) else None
+            if isinstance(patch, dict) and patch:
+                merged = _normalize({**spec, **patch}, sources, schema)
+                _fill_tool_fields(merged, doc, warnings)
+                if not validate_spec(merged):
+                    spec.clear()
+                    spec.update(merged)
+                else:
+                    _add_warning(warnings, trace, f"compile-feedback repair {n}: patch made the spec invalid; discarded")
+        except Exception as e:  # noqa: BLE001 - never lose the valid spec
+            _add_warning(warnings, trace, f"compile-feedback repair {n} failed ({type(e).__name__}: {e})")
+            if isinstance(e, LLMBudgetExceeded):
+                break
+        err = _try_compile(spec, doc)
+    report["compile_repairs"] = n
+    if err:
+        report["compile_error"] = err
+        _add_warning(warnings, trace, f"compile-feedback: spec still does not compile: {err}")
 
 
 def _add_verbatim(spec: dict[str, Any], items: list[Any], warnings: list[str], trace: Any) -> int:
@@ -769,7 +860,7 @@ def extract_from_texts(
     docs = _docs_block(sources)
     user = f"{openapi_summary(doc)}\n\n{docs}\n\nProduce the PolicySpec now."
     try:
-        spec = _primary(asker, system, user, docs, sources, schema, report)
+        spec = _primary(asker, system, user, docs, sources, schema, report, doc)
     except (LLMError, _Degrade) as e:
         report["mode"] = asker.mode
         return fallback(f"{type(e).__name__}: {e}")
@@ -798,6 +889,12 @@ def extract_from_texts(
         _grounding(asker, spec, doc, warnings, trace, report)
     except Exception as e:  # noqa: BLE001
         _add_warning(warnings, trace, f"grounding: check crashed ({type(e).__name__}: {e})")
+
+    if doc:
+        try:
+            _compile_repair_loop(asker, system, spec, doc, sources, schema, warnings, trace, report)
+        except Exception as e:  # noqa: BLE001
+            _add_warning(warnings, trace, f"compile-feedback: check crashed ({type(e).__name__}: {e})")
 
     report["mode"] = asker.mode
     report["seconds"] = time.monotonic() - t0
@@ -851,6 +948,7 @@ def _notes_text(spec: dict[str, Any], warnings: list[str], report: dict[str, Any
     lines.append(f"fallback: {report.get('fallback')}")
     lines.append(f"mode: {report.get('mode')}")
     lines.append(f"repairs: {report.get('repairs', 0)}")
+    lines.append(f"compile_repairs: {report.get('compile_repairs', 0)}")
     lines.append(f"seconds: {report.get('seconds', 0):.1f}")
     lines.append(
         f"tokens: in={getattr(llm, 'total_input_tokens', 0)} out={getattr(llm, 'total_output_tokens', 0)} "
@@ -872,14 +970,16 @@ def stage_extract(ctx: Any) -> str:
         raise ExtractError(f"stage extract_spec: briefs not loaded for inputs {[str(b) for b in ctx.briefs]}")
     llm = make_llm(ctx.trace)
     report: dict[str, Any] = {}
+    budget = float(getattr(ctx, "extract_budget_s", None) or DEFAULT_BUDGET_S)
     spec, warnings = extract_from_texts(
-        list(zip(names, texts)), ctx.openapi_doc, llm, ctx.trace, DEFAULT_BUDGET_S, report
+        list(zip(names, texts)), ctx.openapi_doc, llm, ctx.trace, budget, report
     )
     ctx.spec = spec
     ctx.results["extraction"] = {
         "fallback": report.get("fallback"),
         "mode": report.get("mode"),
         "warnings": len(warnings),
+        "compile_repairs": report.get("compile_repairs", 0),
         "input_tokens": getattr(llm, "total_input_tokens", 0),
         "output_tokens": getattr(llm, "total_output_tokens", 0),
         "seconds": round(report.get("seconds", 0.0), 1),

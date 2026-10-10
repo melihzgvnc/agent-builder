@@ -7,8 +7,11 @@ the arguments of run_build(); output goes only to <runs>/<slot>-<YYYYmmdd-HHMMSS
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import json
 import re
+import threading
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -16,11 +19,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from builder import health, readback
-from builder.compiler import compile_workflow
+from builder import health, readback, selfcheck
+from builder.compiler import compile_fallback, compile_workflow, emergency_workflow
+from builder.extract import stage_extract
 from builder.freya_extra import get_workflow
 from builder.lint import lint
-from builder.spec import load_spec, validate_spec
+from builder.spec import load_spec, spec_to_dict, validate_spec
 from builder.trace import Trace
 
 STAGE_ORDER: tuple[str, ...] = (
@@ -29,6 +33,7 @@ STAGE_ORDER: tuple[str, ...] = (
     "validate_spec",
     "compile_workflow",
     "lint",
+    "offline_checks",
     "dry_run",
     "save",
     "read_back",
@@ -45,8 +50,9 @@ REQUIRES: dict[str, tuple[str, ...]] = {
     "load_inputs": (),
     "extract_spec": ("brief_texts", "openapi_doc"),
     "validate_spec": ("spec",),
-    "compile_workflow": ("spec", "openapi_doc"),
+    "compile_workflow": ("openapi_doc",),
     "lint": ("workflow",),
+    "offline_checks": ("workflow", "spec"),
     "dry_run": ("workflow",),
     "save": ("workflow",),
     "read_back": ("workflow",),
@@ -54,6 +60,37 @@ REQUIRES: dict[str, tuple[str, ...]] = {
     "export": ("workflow",),
     "online_test": ("workflow",),
 }
+
+# Total wall-clock budget of one build (seconds): 5 minutes under the 30 minute rule.
+TOTAL_BUDGET_S: float = 1500.0
+
+# Per-stage time limits (seconds). Only extract_spec and the network stages are cut off by a
+# thread time-out; CPU-only stages run inline and these numbers are targets there.
+STAGE_BUDGETS: dict[str, float] = {
+    "load_inputs": 10.0,
+    "extract_spec": 540.0,
+    "validate_spec": 10.0,
+    "compile_workflow": 60.0,
+    "lint": 30.0,
+    "offline_checks": 120.0,
+    "dry_run": 120.0,
+    "save": 120.0,
+    "read_back": 60.0,
+    "export": 60.0,
+    "smoke_test": 180.0,
+    "online_test": 600.0,
+}
+
+# Stages that still run when the total budget is gone (they are fast and local).
+ESSENTIAL_STAGES: frozenset[str] = frozenset(
+    {"load_inputs", "validate_spec", "compile_workflow", "lint", "offline_checks"}
+)
+
+TIMED_STAGES: frozenset[str] = frozenset({"extract_spec"}) | NETWORK_STAGES
+MIN_EXTRACT_S: float = 60.0  # below this much remaining time extraction is skipped
+EXTRACT_RESERVE_S: float = 240.0  # time kept for everything after extraction
+EXTRACT_MAX_S: float = 480.0
+EXTRACT_MIN_S: float = 30.0
 
 SLOT_PATTERN: re.Pattern[str] = re.compile(r"[A-Za-z0-9._-]+")
 
@@ -80,6 +117,8 @@ class BuildContext:
     spec: dict[str, Any] | None = None
     workflow: dict[str, Any] | None = None
     results: dict[str, object] = field(default_factory=dict)
+    deadline: float | None = None  # time.monotonic() value at which the total budget ends
+    extract_budget_s: float | None = None
 
 
 class StageSkipped(Exception):
@@ -122,10 +161,19 @@ def _saved(ctx: BuildContext) -> dict[str, Any]:
     return info
 
 
-def stage_extract_spec(ctx: BuildContext) -> str:
-    """Dev option: read a ready PolicySpec from --spec. Without it extraction is not available."""
+def _degrade(ctx: BuildContext, message: str) -> None:
+    """Record a loud DEGRADED warning in the trace and in ctx.results['degraded']."""
+    ctx.trace.warn(f"DEGRADED: {message}")
+    ctx.results.setdefault("degraded", [])
+    degraded = ctx.results["degraded"]
+    if isinstance(degraded, list):
+        degraded.append(message)
+
+
+def stage_spec_file(ctx: BuildContext) -> str:
+    """Dev option: read a ready PolicySpec from --spec instead of running the extractor."""
     if ctx.spec_path is None:
-        raise NotImplementedStage()
+        raise StageSkipped("no --spec file given")
     data = json.loads(Path(ctx.spec_path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("spec file is not a JSON object")
@@ -136,9 +184,10 @@ def stage_extract_spec(ctx: BuildContext) -> str:
 def stage_validate_spec(ctx: BuildContext) -> str:
     """Validate ctx.spec against the PolicySpec schema; write run_dir/spec.json when valid."""
     if ctx.spec is None:
-        raise StageSkipped("no spec: extract_spec not implemented")
+        raise StageSkipped("no spec: extract_spec produced none")
     errors = validate_spec(ctx.spec)
     if errors:
+        ctx.results["spec_invalid"] = True
         for err in errors:
             ctx.trace.warn(f"spec: {err}")
         raise RuntimeError(f"spec invalid: {len(errors)} errors")
@@ -148,17 +197,68 @@ def stage_validate_spec(ctx: BuildContext) -> str:
     return "spec valid"
 
 
-def stage_compile_workflow(ctx: BuildContext) -> str:
-    """Compile the spec into a workflow; write workflow.json and compile_report.json."""
-    assert ctx.spec is not None and ctx.openapi_doc is not None
-    ctx.spec_obj = load_spec(ctx.spec)
-    workflow, report = compile_workflow(ctx.spec_obj, ctx.openapi_doc)
+def _read_sources(
+    briefs: list[Path], texts: list[str] | None = None
+) -> list[tuple[str, str]]:
+    """(file name, text) per brief; uses loaded texts when complete, else reads each file safely."""
+    if texts is not None and len(texts) == len(briefs):
+        return [(Path(b).name, t) for b, t in zip(briefs, texts)]
+    out: list[tuple[str, str]] = []
+    for b in briefs:
+        try:
+            out.append((Path(b).name, Path(b).read_text(encoding="utf-8")))
+        except (OSError, UnicodeDecodeError):
+            continue
+    return out
+
+
+def _write_json(path: Path, data: Any) -> None:
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _compile_with_fallback(ctx: BuildContext, reason: str) -> str:
+    """Write the generic fallback workflow and a report that says so."""
+    assert ctx.openapi_doc is not None
+    sources = _read_sources(ctx.briefs, ctx.brief_texts)
+    workflow, report = compile_fallback(sources, ctx.openapi_doc)
     ctx.workflow = workflow
-    (ctx.run_dir / "workflow.json").write_text(
-        json.dumps(workflow, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    ctx.results["fallback_workflow"] = reason
+    _write_json(ctx.run_dir / "workflow.json", workflow)
+    _write_json(
+        ctx.run_dir / "compile_report.json",
+        {**report.to_dict(), "fallback_workflow": True, "fallback_reason": reason},
     )
-    (ctx.run_dir / "compile_report.json").write_text(
-        json.dumps(report.to_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    _degrade(ctx, f"FALLBACK WORKFLOW built from the raw briefs and the tool API: {reason}")
+    nodes = workflow.get("nodes")
+    count = len(nodes) if isinstance(nodes, (dict, list)) else 0
+    return f"FALLBACK WORKFLOW ({reason}); {count} nodes"
+
+
+def stage_compile_workflow(ctx: BuildContext) -> str:
+    """Compile the spec into a workflow; write workflow.json and compile_report.json.
+
+    Without a usable spec (none, invalid, or a compile error) a generic fallback workflow is
+    written instead, so a build always ends with workflow.json.
+    """
+    assert ctx.openapi_doc is not None
+    if ctx.spec is None:
+        return _compile_with_fallback(ctx, "no spec (extraction failed or was skipped)")
+    if ctx.results.get("spec_invalid"):
+        return _compile_with_fallback(ctx, "the spec did not pass validation")
+    try:
+        ctx.spec_obj = load_spec(ctx.spec)
+        workflow, report = compile_workflow(ctx.spec_obj, ctx.openapi_doc)
+    except Exception as e:  # noqa: BLE001 - any compile problem degrades to the fallback workflow
+        ctx.spec_obj = None
+        reason = f"compile failed: {type(e).__name__}: {e}"
+        ctx.trace.error(reason, traceback_text=traceback.format_exc())
+        return _compile_with_fallback(ctx, reason)
+    ctx.workflow = workflow
+    ctx.results["compile_context"] = report.context
+    _write_json(ctx.run_dir / "workflow.json", workflow)
+    _write_json(
+        ctx.run_dir / "compile_report.json",
+        {**report.to_dict(), "fallback_workflow": False, "fallback_reason": ""},
     )
     for w in report.warnings:
         ctx.trace.warn(f"compile: {w}")
@@ -182,6 +282,94 @@ def stage_lint(ctx: BuildContext) -> str:
     errors = sum(1 for f in findings if f.severity == "error")
     ctx.results["lint"] = [f.format() for f in findings]
     return f"{errors} error(s), {len(findings) - errors} warning(s)"
+
+
+def _selfcheck_block(result: selfcheck.SelfCheckResult) -> dict[str, Any]:
+    """The compile_report.json['selfcheck'] entry."""
+    return {
+        "checks": result.ran,
+        "failed": [c.format() for c in result.failed],
+        "warnings": [c.format() for c in result.warnings],
+        "repairs": list(result.repairs),
+        "skipped": list(result.skipped),
+    }
+
+
+def _try_repair(
+    ctx: BuildContext, spec_dict: dict[str, Any], result: selfcheck.SelfCheckResult
+) -> selfcheck.SelfCheckResult:
+    """One deterministic repair pass; the repaired workflow is kept only if it is clearly better.
+
+    Accepted only when the recompiled workflow has no lint error and strictly fewer failed checks;
+    otherwise the original workflow stays and a loud warning says why.
+    """
+    assert ctx.openapi_doc is not None
+    repaired = selfcheck.repair_spec(spec_dict, result)
+    if repaired is None:
+        ctx.trace.warn("selfcheck: no deterministic repair applies to the failed checks; workflow kept as compiled")
+        return result
+    fixed, names = repaired
+    label = ", ".join(names)
+    try:
+        spec_obj = load_spec(fixed)
+        workflow, report = compile_workflow(spec_obj, ctx.openapi_doc)
+        lint_errors = [f for f in lint(workflow) if f.severity == "error"]
+        again = selfcheck.run_selfchecks(workflow, spec_to_dict(spec_obj), ctx.openapi_doc, report.context)
+    except Exception as e:  # noqa: BLE001 - a failed repair must never lose the original workflow
+        ctx.trace.warn(f"selfcheck: repair [{label}] could not be built ({type(e).__name__}: {e}); original workflow kept")
+        return result
+    if lint_errors or len(again.failed) >= len(result.failed):
+        why = f"{len(lint_errors)} lint error(s)" if lint_errors else f"failed checks {len(result.failed)} -> {len(again.failed)}"
+        ctx.trace.warn(f"selfcheck: repair [{label}] rejected ({why}); original workflow kept")
+        return result
+    ctx.workflow = workflow
+    ctx.spec_obj = spec_obj
+    ctx.results["compile_context"] = report.context
+    _write_json(ctx.run_dir / "workflow.json", workflow)
+    _write_json(
+        ctx.run_dir / "compile_report.json",
+        {**report.to_dict(), "fallback_workflow": False, "fallback_reason": ""},
+    )
+    again.repairs = list(names)
+    ctx.trace.warn(
+        f"REPAIRED: [{label}] changed the workflow (failed checks {len(result.failed)} -> {len(again.failed)}); "
+        "spec.json is unchanged, see compile_report.json"
+    )
+    return again
+
+
+def stage_offline_checks(ctx: BuildContext) -> str:
+    """Run the spec-derived scenario checks on the compiled workflow (no network, no model).
+
+    Failed checks are reported (trace errors, compile_report.json['selfcheck']) and never raise;
+    at most one deterministic repair is tried (see selfcheck.REPAIRS).
+    """
+    if ctx.results.get("fallback_workflow"):
+        raise StageSkipped("fallback workflow: there is no spec to check it against")
+    context = ctx.results.get("compile_context")
+    if ctx.workflow is None or ctx.spec is None or ctx.openapi_doc is None or not isinstance(context, dict) or not context:
+        raise StageSkipped("no compile context (the workflow was not compiled from a spec)")
+    spec_dict = spec_to_dict(ctx.spec_obj) if ctx.spec_obj is not None else ctx.spec
+    result = selfcheck.run_selfchecks(ctx.workflow, spec_dict, ctx.openapi_doc, context)
+    if result.failed:
+        result = _try_repair(ctx, spec_dict, result)
+    for c in result.failed:
+        ctx.trace.error(f"selfcheck FAILED: {c.format()}")
+    for c in result.warnings:
+        ctx.trace.warn(f"selfcheck: {c.format()}")
+    ctx.results["selfcheck"] = _selfcheck_block(result)
+    path = ctx.run_dir / "compile_report.json"
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        report = {}
+    if isinstance(report, dict):
+        report["selfcheck"] = _selfcheck_block(result)
+        _write_json(path, report)
+    return (
+        f"{result.ran} checks, {len(result.failed)} failed, {len(result.warnings)} warning(s), "
+        f"{len(result.repairs)} repair(s), {len(result.skipped)} skipped"
+    )
 
 
 def stage_dry_run(ctx: BuildContext) -> str:
@@ -249,10 +437,11 @@ def stage_online_test(ctx: BuildContext) -> str:
 
 DEFAULT_STAGES: dict[str, StageFn] = {
     "load_inputs": stage_load_inputs,
-    "extract_spec": stage_extract_spec,
+    "extract_spec": stage_extract,
     "validate_spec": stage_validate_spec,
     "compile_workflow": stage_compile_workflow,
     "lint": stage_lint,
+    "offline_checks": stage_offline_checks,
     "dry_run": stage_dry_run,
     "save": stage_save,
     "read_back": stage_read_back,
@@ -276,6 +465,10 @@ def describe_input(ctx: BuildContext, name: str) -> str:
         if isinstance(ctx.spec, dict):
             return f"spec keys={sorted(ctx.spec)}"
         return "spec=None"
+    if name == "offline_checks":
+        nodes = ctx.workflow.get("nodes") if isinstance(ctx.workflow, dict) else None
+        count = len(nodes) if isinstance(nodes, (dict, list)) else 0
+        return f"workflow nodes={count} spec={'set' if isinstance(ctx.spec, dict) else 'None'}"
     if isinstance(ctx.workflow, dict):
         nodes = ctx.workflow.get("nodes")
         count = len(nodes) if isinstance(nodes, (dict, list)) else 0
@@ -291,8 +484,46 @@ def _missing_requirement(ctx: BuildContext, name: str) -> str | None:
     return None
 
 
-def run_stage(name: str, fn: StageFn, ctx: BuildContext) -> str:
-    """Run one stage with crash containment. Returns 'ok', 'skipped' or 'failed'; never raises."""
+class StageTimeout(Exception):
+    """A stage ran longer than its time limit and was abandoned."""
+
+
+def _call_with_timeout(fn: StageFn, ctx: BuildContext, timeout_s: float) -> str:
+    """Run fn on a shadow copy of ctx in a daemon thread; merge the shadow back only on completion.
+
+    On time-out the thread is abandoned and the shadow discarded, so a late finish cannot
+    change the real context. Exceptions of the stage are re-raised here.
+    """
+    shadow = copy.copy(ctx)
+    shadow.results = dict(ctx.results)
+    outcome: dict[str, Any] = {}
+
+    def target() -> None:
+        try:
+            outcome["detail"] = fn(shadow)
+        except BaseException as e:  # noqa: BLE001 - handed to the caller thread
+            outcome["error"] = e
+
+    thread = threading.Thread(target=target, name="stage-worker", daemon=True)
+    thread.start()
+    thread.join(max(0.0, timeout_s))
+    if thread.is_alive():
+        raise StageTimeout(f"{timeout_s:g} s")
+    for f in dataclasses.fields(ctx):
+        if f.name != "results":
+            setattr(ctx, f.name, getattr(shadow, f.name))
+    ctx.results.update(shadow.results)
+    error = outcome.get("error")
+    if error is not None:
+        raise error
+    return str(outcome.get("detail") or "")
+
+
+def run_stage(name: str, fn: StageFn, ctx: BuildContext, timeout_s: float | None = None) -> str:
+    """Run one stage with crash containment. Returns 'ok', 'skipped' or 'failed'; never raises.
+
+    With timeout_s the stage runs in a worker thread and is abandoned when it takes longer.
+    """
     t0 = time.monotonic()
     if ctx.dry and name in NETWORK_STAGES:
         ctx.trace.log_stage(name, "skipped", "--dry", time.monotonic() - t0)
@@ -307,10 +538,15 @@ def run_stage(name: str, fn: StageFn, ctx: BuildContext) -> str:
         )
         return "skipped"
     try:
-        detail = fn(ctx)
+        detail = fn(ctx) if timeout_s is None else _call_with_timeout(fn, ctx, timeout_s)
     except StageSkipped as e:
         ctx.trace.log_stage(name, "skipped", str(e) or "skipped", time.monotonic() - t0)
         return "skipped"
+    except StageTimeout as e:
+        msg = f"stage {name} exceeded {e}, abandoned (input {describe_input(ctx, name)})"
+        ctx.trace.error(msg)
+        ctx.trace.log_stage(name, "failed", msg, time.monotonic() - t0)
+        return "failed"
     except Exception as e:  # noqa: BLE001 - every stage crash is contained by design
         msg = (
             f"stage {name} crashed on input {describe_input(ctx, name)}: "
@@ -351,6 +587,64 @@ def _new_run_dir(runs: Path, slot: str) -> Path:
         return candidate
 
 
+def ensure_workflow_on_disk(
+    run_dir: Path,
+    briefs: list[Path],
+    openapi_path: Path,
+    trace: Trace,
+    ctx: BuildContext | None = None,
+) -> str:
+    """Guarantee run_dir/workflow.json. Returns 'present', 'fallback' or 'emergency'.
+
+    Called after all stages. When the file is missing it is built from the briefs and the tool API
+    (each read guarded); if even that fails, the static emergency workflow is written. Never raises.
+    """
+    run_dir = Path(run_dir)
+    path = run_dir / "workflow.json"
+    try:
+        if path.is_file():
+            return "present"
+        trace.error("workflow.json missing after all stages; writing a fallback workflow")
+        texts = ctx.brief_texts if ctx is not None else None
+        sources = _read_sources([Path(b) for b in briefs], texts)
+        doc: dict[str, Any] = {}
+        try:
+            loaded = json.loads(Path(openapi_path).read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                doc = loaded
+        except (OSError, ValueError) as e:
+            trace.error(f"ensure_workflow_on_disk: tool API unreadable: {type(e).__name__}: {e}")
+        kind = "fallback"
+        report: dict[str, Any] | None = None
+        try:
+            workflow, rep = compile_fallback(sources, doc)
+            report = {**rep.to_dict(), "fallback_workflow": True, "fallback_reason": "workflow.json missing after all stages"}
+        except Exception as e:  # noqa: BLE001
+            trace.error(
+                f"ensure_workflow_on_disk: fallback compile failed: {type(e).__name__}: {e}",
+                traceback_text=traceback.format_exc(),
+            )
+            workflow = emergency_workflow()
+            kind = "emergency"
+        _write_json(path, workflow)
+        if report is not None and not (run_dir / "compile_report.json").exists():
+            _write_json(run_dir / "compile_report.json", report)
+        trace.warn(f"DEGRADED: workflow.json was missing; wrote the {kind} workflow")
+        return kind
+    except Exception as e:  # noqa: BLE001 - last line of defence
+        trace.error(f"ensure_workflow_on_disk failed: {type(e).__name__}: {e}")
+        try:
+            _write_json(path, emergency_workflow())
+            return "emergency"
+        except Exception as e2:  # noqa: BLE001
+            trace.error(f"emergency workflow could not be written: {type(e2).__name__}: {e2}")
+            return "missing"
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
 def run_build(
     root: Path,
     briefs: list[Path],
@@ -363,11 +657,15 @@ def run_build(
     on_run_dir: Callable[[Path], None] | None = None,
     spec_path: Path | None = None,
     client: Any = None,
+    budget_s: float = TOTAL_BUDGET_S,
+    stage_timeouts: dict[str, float] | None = None,
 ) -> int:
     """Run every stage in STAGE_ORDER for one build. Returns the process exit code.
 
     `stages` overrides stage functions by name (tests inject stages this way); `on_run_dir` is
-    called with the new run folder as soon as it exists.
+    called with the new run folder as soon as it exists. `budget_s` is the total time budget;
+    `stage_timeouts` overrides STAGE_BUDGETS per stage (seconds). Whatever happens, the run
+    folder ends with a workflow.json.
     """
     root = Path(root)
     run_dir = _new_run_dir(Path(runs_dir) if runs_dir is not None else root / "runs", slot)
@@ -375,6 +673,7 @@ def run_build(
         on_run_dir(run_dir)
     trace = Trace(run_dir, root)
     exit_code = 0
+    ctx: BuildContext | None = None
     try:
         trace.set_inputs(
             briefs,
@@ -385,6 +684,7 @@ def run_build(
                 "dry": dry,
                 "layer order": " > ".join(str(b) for b in briefs),
                 "spec": str(spec_path) if spec_path is not None else "(extraction)",
+                "time budget": f"{budget_s:g} s",
             },
         )
         ctx = BuildContext(
@@ -398,11 +698,38 @@ def run_build(
             trace=trace,
             spec_path=Path(spec_path) if spec_path is not None else None,
             client=client,
+            deadline=time.monotonic() + budget_s,
         )
-        table: dict[str, StageFn] = {**DEFAULT_STAGES, **(stages or {})}
+        overrides: dict[str, StageFn] = {"extract_spec": stage_spec_file} if spec_path is not None else {}
+        table: dict[str, StageFn] = {**DEFAULT_STAGES, **overrides, **(stages or {})}
+        limits = {**STAGE_BUDGETS, **(stage_timeouts or {})}
         for name in STAGE_ORDER:
-            if run_stage(name, table[name], ctx) == "failed":
+            remaining = (ctx.deadline or 0.0) - time.monotonic()
+            runs_for_real = not (dry and name in NETWORK_STAGES)
+            if runs_for_real and name not in ESSENTIAL_STAGES and remaining <= 0:
+                msg = f"skipped: total time budget exhausted ({budget_s:g} s)"
+                trace.warn(f"DEGRADED: stage {name} {msg}")
+                trace.log_stage(name, "skipped", msg, 0.0)
+                continue
+            if runs_for_real and table[name] is stage_extract:
+                if remaining < MIN_EXTRACT_S:
+                    msg = f"skipped: total time budget too low for extraction ({max(remaining, 0.0):.0f} s left)"
+                    trace.warn(f"DEGRADED: stage {name} {msg}")
+                    trace.log_stage(name, "skipped", msg, 0.0)
+                    continue
+                ctx.extract_budget_s = _clamp(
+                    min(EXTRACT_MAX_S, remaining - EXTRACT_RESERVE_S), EXTRACT_MIN_S, EXTRACT_MAX_S
+                )
+            timeout_s: float | None = None
+            if name in TIMED_STAGES or (stage_timeouts is not None and name in stage_timeouts):
+                timeout_s = min(limits.get(name, remaining), max(remaining, 0.0))
+            status = run_stage(name, table[name], ctx, timeout_s)
+            if status == "failed":
                 exit_code = 1
+            elif status == "ok" and name == "extract_spec":
+                extraction = ctx.results.get("extraction")
+                if isinstance(extraction, dict) and extraction.get("fallback"):
+                    _degrade(ctx, "extraction fell back to the minimal spec; the workflow will not follow the briefs' policy")
     except Exception as e:  # noqa: BLE001 - the trace must always be finished
         trace.error(
             f"build crashed outside a stage: {type(e).__name__}: {e}",
@@ -410,5 +737,6 @@ def run_build(
         )
         exit_code = 1
     finally:
+        ensure_workflow_on_disk(run_dir, briefs, openapi, trace, ctx)
         exit_code = trace.finish(exit_code)
     return exit_code

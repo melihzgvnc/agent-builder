@@ -1,0 +1,6 @@
+[
+  {
+    "token": "no valid callback time",
+    "reason": "Generic builder wording for the case where the model found no usable callback time. It is a spec fixture leaf, not a sentence of any brief, and carries no brief value."
+  }
+]
