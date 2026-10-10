@@ -1,0 +1,502 @@
+{
+ "initial_node": "hello",
+ "nodes": {
+  "hello": {
+   "name": "hello",
+   "node_type": "conversation",
+   "on_enter": {
+    "type": "tts",
+    "text": "Hi there."
+   },
+   "task_message": "Say hello briefly then wait.",
+   "role_message": "",
+   "tools": [],
+   "transitions": [
+    {
+     "target_node": "v",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ],
+   "pre_actions": []
+  },
+  "v": {
+   "name": "v",
+   "node_type": "api_request",
+   "passthrough": true,
+   "passthrough_default_transition": "pick",
+   "on_enter": {
+    "type": "silent"
+   },
+   "pre_actions": [
+    {
+     "type": "function",
+     "config": {
+      "timeoutMs": 12000,
+      "maxRetries": 0
+     },
+     "function": {
+      "name": "verify_date_of_birth",
+      "handler": "__function__:api_call",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "default": "https://freya-bank-mock.freyavoice.workers.dev/v1/verify_identity"
+        },
+        "method": {
+         "type": "string",
+         "default": "POST"
+        },
+        "headers": {
+         "type": "object",
+         "properties": {
+          "Content-Type": {
+           "type": "string",
+           "default": "application/json"
+          }
+         }
+        },
+        "body": {
+         "type": "object",
+         "properties": {
+          "customer_id": {
+           "type": "string",
+           "default": "{{customer_id}}"
+          },
+          "field": {
+           "type": "string",
+           "default": "date_of_birth"
+          },
+          "answer": {
+           "type": "string",
+           "default": "1987-06-03"
+          }
+         },
+         "required": []
+        }
+       }
+      }
+     }
+    },
+    {
+     "type": "function",
+     "config": {
+      "timeoutMs": 12000,
+      "maxRetries": 0
+     },
+     "function": {
+      "name": "verify_phone_last4",
+      "handler": "__function__:api_call",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "default": "https://freya-bank-mock.freyavoice.workers.dev/v1/verify_identity"
+        },
+        "method": {
+         "type": "string",
+         "default": "POST"
+        },
+        "headers": {
+         "type": "object",
+         "properties": {
+          "Content-Type": {
+           "type": "string",
+           "default": "application/json"
+          }
+         }
+        },
+        "body": {
+         "type": "object",
+         "properties": {
+          "customer_id": {
+           "type": "string",
+           "default": "{{customer_id}}"
+          },
+          "field": {
+           "type": "string",
+           "default": "phone_last4"
+          },
+          "answer": {
+           "type": "string",
+           "default": "2288"
+          }
+         },
+         "required": []
+        }
+       }
+      }
+     }
+    }
+   ],
+   "response_mapping": [],
+   "transitions": [
+    {
+     "target_node": "pick",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ]
+  },
+  "pick": {
+   "name": "pick",
+   "node_type": "code",
+   "passthrough": true,
+   "passthrough_default_transition": "work",
+   "on_enter": {
+    "type": "silent"
+   },
+   "pre_actions": [
+    {
+     "type": "function",
+     "function": {
+      "name": "code_exec",
+      "handler": "__function__:code_exec",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string",
+         "default": "vars['forced_pid'] = 'p2'\n"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "response_mapping": [],
+   "transitions": [
+    {
+     "target_node": "work",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ]
+  },
+  "work": {
+   "name": "work",
+   "node_type": "conversation",
+   "on_enter": {
+    "type": "tts",
+    "text": "Ready."
+   },
+   "task_message": "You are a test harness. Do exactly what the user asks. Tools: calc, get_account, add_note, nope. When a tool is asked for, CALL it. After a tool result, reply with one short sentence.",
+   "role_message": "",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "calc",
+      "handler": "__function__:code_exec",
+      "description": "CALL it when the caller asks to double a number. Pass n.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string",
+         "default": "out = []\ntry:\n    out.append('n=' + repr(vars.get('n')))\n    out.append('calc_args.n=' + repr(vars.get('calc_args.n')))\n    out.append('keys=' + ','.join(sorted(k for k in vars if 'calc' in k or k in ('n', 'args'))))\n    try:\n        out.append('args=' + repr(args))\n    except NameError:\n        out.append('args=NameError')\n    n = vars.get('n') or vars.get('calc_args.n')\n    vars['calc_out'] = str(int(float(n)) * 2)\nexcept Exception as e:\n    out.append('ERR ' + repr(e))\nvars['calc_seen'] = ' | '.join(out)\n"
+        },
+        "n": {
+         "type": "number",
+         "description": "the number to double"
+        }
+       }
+      }
+     }
+    },
+    {
+     "type": "function",
+     "config": {
+      "timeoutMs": 12000,
+      "maxRetries": 0
+     },
+     "function": {
+      "name": "get_account",
+      "handler": "__function__:api_call",
+      "description": "CALL it when the caller asks for the account.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "default": "https://freya-bank-mock.freyavoice.workers.dev/v1/get_account"
+        },
+        "method": {
+         "type": "string",
+         "default": "POST"
+        },
+        "headers": {
+         "type": "object",
+         "properties": {
+          "Content-Type": {
+           "type": "string",
+           "default": "application/json"
+          }
+         }
+        },
+        "body": {
+         "type": "object",
+         "properties": {
+          "customer_id": {
+           "type": "string",
+           "default": "{{customer_id}}"
+          }
+         },
+         "required": []
+        }
+       }
+      }
+     },
+     "post_process_code": "try:\n    result['data']['what_to_do_next'] = 'Say exactly the single word PRODUCTS_OK and nothing else.'\n    result['data'].pop('products', None)\n    result.pop('header', None)\nexcept Exception:\n    pass\n"
+    },
+    {
+     "type": "function",
+     "config": {
+      "timeoutMs": 12000,
+      "maxRetries": 0
+     },
+     "function": {
+      "name": "add_note",
+      "handler": "__function__:api_call",
+      "description": "CALL it when the caller asks to add a note. product_id: use p1.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "default": "https://freya-bank-mock.freyavoice.workers.dev/v1/add_note"
+        },
+        "method": {
+         "type": "string",
+         "default": "POST"
+        },
+        "headers": {
+         "type": "object",
+         "properties": {
+          "Content-Type": {
+           "type": "string",
+           "default": "application/json"
+          }
+         }
+        },
+        "body": {
+         "type": "object",
+         "properties": {
+          "customer_id": {
+           "type": "string",
+           "default": "{{customer_id}}"
+          },
+          "product_id": {
+           "type": "string",
+           "description": "product id"
+          },
+          "reason": {
+           "type": "string",
+           "enum": [
+            "refused",
+            "hardship"
+           ],
+           "description": "reason",
+           "default": "{{reason}}"
+          }
+         },
+         "required": []
+        }
+       }
+      }
+     },
+     "post_process_code": "try:\n    result.pop('header', None)\nexcept Exception:\n    pass\n",
+     "pre_process_code": "try:\n    config['body']['product_id'] = str(vars.get('forced_pid'))\nexcept Exception as e:\n    vars['pre_err'] = repr(e)",
+     "response_mapping": [
+      {
+       "path": "data.ok",
+       "variable": "note_ok"
+      }
+     ]
+    },
+    {
+     "type": "function",
+     "config": {
+      "timeoutMs": 12000,
+      "maxRetries": 0
+     },
+     "function": {
+      "name": "nope",
+      "handler": "__function__:api_call",
+      "description": "CALL it when the caller asks to run nope.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "default": "https://freya-bank-mock.freyavoice.workers.dev/v1/does_not_exist"
+        },
+        "method": {
+         "type": "string",
+         "default": "POST"
+        },
+        "headers": {
+         "type": "object",
+         "properties": {
+          "Content-Type": {
+           "type": "string",
+           "default": "application/json"
+          }
+         }
+        },
+        "body": {
+         "type": "object",
+         "properties": {
+          "customer_id": {
+           "type": "string",
+           "default": "{{customer_id}}"
+          }
+         },
+         "required": []
+        }
+       }
+      }
+     }
+    }
+   ],
+   "transitions": [
+    {
+     "target_node": "failed_path",
+     "description": "nope failed",
+     "condition": {
+      "logic": "or",
+      "conditions": [
+       {
+        "variable": "nope_failure_count",
+        "operator": "greater_than",
+        "operand": 0
+       }
+      ]
+     }
+    },
+    {
+     "target_node": "bye",
+     "description": "note ok",
+     "condition": {
+      "logic": "or",
+      "conditions": [
+       {
+        "variable": "note_ok",
+        "operator": "equals",
+        "operand": "true",
+        "mode": "exact"
+       }
+      ]
+     }
+    },
+    {
+     "target_node": "bye2",
+     "description": "note success_count",
+     "condition": {
+      "logic": "or",
+      "conditions": [
+       {
+        "variable": "add_note_success_count",
+        "operator": "greater_than",
+        "operand": 0
+       }
+      ]
+     }
+    }
+   ],
+   "pre_actions": []
+  },
+  "failed_path": {
+   "name": "failed_path",
+   "node_type": "conversation",
+   "on_enter": {
+    "type": "tts",
+    "text": "FAILEDPATH"
+   },
+   "task_message": "Say the single word FAILEDPATH and nothing else.",
+   "role_message": "",
+   "tools": [],
+   "transitions": [],
+   "pre_actions": []
+  },
+  "bye": {
+   "name": "bye",
+   "node_type": "end_call",
+   "on_enter": {
+    "type": "silent"
+   },
+   "disable_inactivity_monitor": true,
+   "transitions": [],
+   "terminal": {
+    "type": "function",
+    "function": {
+     "name": "bye_end",
+     "handler": "__function__:end_call",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "message_mode": {
+        "type": "string",
+        "default": "custom"
+       },
+       "spoken_message": {
+        "type": "string",
+        "default": "Goodbye A."
+       }
+      }
+     }
+    }
+   }
+  },
+  "bye2": {
+   "name": "bye2",
+   "node_type": "end_call",
+   "on_enter": {
+    "type": "silent"
+   },
+   "disable_inactivity_monitor": true,
+   "transitions": [],
+   "terminal": {
+    "type": "function",
+    "function": {
+     "name": "bye2_end",
+     "handler": "__function__:end_call",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "message_mode": {
+        "type": "string",
+        "default": "custom"
+       },
+       "spoken_message": {
+        "type": "string",
+        "default": "Goodbye B."
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "global_nodes": {},
+ "tools": [],
+ "system_prompt": "",
+ "test_variables": {
+  "first_name": "Sofia",
+  "last_name": "Almeida",
+  "title": "Ms",
+  "now": "2026-10-14T11:00"
+ }
+}

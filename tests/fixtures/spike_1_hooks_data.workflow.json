@@ -1,0 +1,479 @@
+{
+ "initial_node": "hello",
+ "nodes": {
+  "hello": {
+   "name": "hello",
+   "node_type": "conversation",
+   "on_enter": {
+    "type": "tts",
+    "text": "Hi there."
+   },
+   "task_message": "Say hello in one short sentence. Then wait.",
+   "role_message": "",
+   "tools": [],
+   "transitions": [
+    {
+     "target_node": "v",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ],
+   "pre_actions": []
+  },
+  "v": {
+   "name": "v",
+   "node_type": "api_request",
+   "passthrough": true,
+   "passthrough_default_transition": "acct",
+   "on_enter": {
+    "type": "silent"
+   },
+   "pre_actions": [
+    {
+     "type": "function",
+     "config": {
+      "timeoutMs": 12000,
+      "maxRetries": 0
+     },
+     "function": {
+      "name": "verify_date_of_birth",
+      "handler": "__function__:api_call",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "default": "https://freya-bank-mock.freyavoice.workers.dev/v1/verify_identity"
+        },
+        "method": {
+         "type": "string",
+         "default": "POST"
+        },
+        "headers": {
+         "type": "object",
+         "properties": {
+          "Content-Type": {
+           "type": "string",
+           "default": "application/json"
+          }
+         }
+        },
+        "body": {
+         "type": "object",
+         "properties": {
+          "customer_id": {
+           "type": "string",
+           "default": "{{customer_id}}"
+          },
+          "field": {
+           "type": "string",
+           "default": "date_of_birth"
+          },
+          "answer": {
+           "type": "string",
+           "default": "1987-06-03"
+          }
+         },
+         "required": []
+        }
+       }
+      }
+     }
+    },
+    {
+     "type": "function",
+     "config": {
+      "timeoutMs": 12000,
+      "maxRetries": 0
+     },
+     "function": {
+      "name": "verify_phone_last4",
+      "handler": "__function__:api_call",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "default": "https://freya-bank-mock.freyavoice.workers.dev/v1/verify_identity"
+        },
+        "method": {
+         "type": "string",
+         "default": "POST"
+        },
+        "headers": {
+         "type": "object",
+         "properties": {
+          "Content-Type": {
+           "type": "string",
+           "default": "application/json"
+          }
+         }
+        },
+        "body": {
+         "type": "object",
+         "properties": {
+          "customer_id": {
+           "type": "string",
+           "default": "{{customer_id}}"
+          },
+          "field": {
+           "type": "string",
+           "default": "phone_last4"
+          },
+          "answer": {
+           "type": "string",
+           "default": "2288"
+          }
+         },
+         "required": []
+        }
+       }
+      }
+     }
+    }
+   ],
+   "response_mapping": [],
+   "transitions": [
+    {
+     "target_node": "acct",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ]
+  },
+  "acct": {
+   "name": "acct",
+   "node_type": "api_request",
+   "passthrough": true,
+   "passthrough_default_transition": "dump1",
+   "on_enter": {
+    "type": "silent"
+   },
+   "pre_actions": [
+    {
+     "type": "function",
+     "config": {
+      "timeoutMs": 12000,
+      "maxRetries": 0
+     },
+     "function": {
+      "name": "get_account",
+      "handler": "__function__:api_call",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "default": "https://freya-bank-mock.freyavoice.workers.dev/v1/get_account"
+        },
+        "method": {
+         "type": "string",
+         "default": "POST"
+        },
+        "headers": {
+         "type": "object",
+         "properties": {
+          "Content-Type": {
+           "type": "string",
+           "default": "application/json"
+          }
+         }
+        },
+        "body": {
+         "type": "object",
+         "properties": {
+          "customer_id": {
+           "type": "string",
+           "default": "{{customer_id}}"
+          }
+         },
+         "required": []
+        }
+       }
+      }
+     },
+     "post_process_code": "vars['x'] = 'seen'\ntry:\n    result['data']['injected'] = 'hello'\nexcept Exception:\n    pass\n"
+    }
+   ],
+   "response_mapping": [
+    {
+     "path": "data.products",
+     "variable": "prods"
+    },
+    {
+     "path": "data.products.0.past_due",
+     "variable": "p0_due"
+    },
+    {
+     "path": "data.ok",
+     "variable": "ok_v"
+    },
+    {
+     "path": "data",
+     "variable": "whole"
+    },
+    {
+     "path": "data.products.0",
+     "variable": "first_obj"
+    }
+   ],
+   "transitions": [
+    {
+     "target_node": "dump1",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ]
+  },
+  "dump1": {
+   "name": "dump1",
+   "node_type": "code",
+   "passthrough": true,
+   "passthrough_default_transition": "noteb",
+   "on_enter": {
+    "type": "silent"
+   },
+   "pre_actions": [
+    {
+     "type": "function",
+     "function": {
+      "name": "code_exec",
+      "handler": "__function__:code_exec",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string",
+         "default": "import json\nout = []\ntry:\n    for k in ('prods', 'p0_due', 'ok_v', 'whole', 'first_obj', 'acct_response.data.products', 'acct_response.data.ok', 'acct2_response.data.products', 'acct_response.status_code', 'acct_success_count'):\n        v = vars.get(k)\n        out.append(k + '=' + type(v).__name__ + ':' + repr(v)[:260])\n    ks = sorted(k for k in vars if (k.startswith('acct') and 'header' not in k))\n    out.append('NKEYS=' + str(len(ks)))\n    for k in ks[:14]:\n        out.append(k + '=' + type(vars[k]).__name__ + ':' + repr(vars[k])[:60])\nexcept Exception as e:\n    out.append('ERR ' + repr(e))\nvars['dump1'] = ' || '.join(out)\nvars['y'] = 'fromcode'\n"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "response_mapping": [],
+   "transitions": [
+    {
+     "target_node": "noteb",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ]
+  },
+  "noteb": {
+   "name": "noteb",
+   "node_type": "api_request",
+   "passthrough": true,
+   "passthrough_default_transition": "acct2",
+   "on_enter": {
+    "type": "silent"
+   },
+   "pre_actions": [
+    {
+     "type": "function",
+     "config": {
+      "timeoutMs": 12000,
+      "maxRetries": 0
+     },
+     "function": {
+      "name": "add_note",
+      "handler": "__function__:api_call",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "default": "https://freya-bank-mock.freyavoice.workers.dev/v1/add_note"
+        },
+        "method": {
+         "type": "string",
+         "default": "POST"
+        },
+        "headers": {
+         "type": "object",
+         "properties": {
+          "Content-Type": {
+           "type": "string",
+           "default": "application/json"
+          }
+         }
+        },
+        "body": {
+         "type": "object",
+         "properties": {
+          "customer_id": {
+           "type": "string",
+           "default": "{{customer_id}}"
+          },
+          "product_id": {
+           "type": "string",
+           "default": "p9"
+          },
+          "reason": {
+           "type": "string",
+           "default": "refused"
+          },
+          "text": {
+           "type": "string",
+           "default": "orig"
+          }
+         },
+         "required": []
+        }
+       }
+      }
+     },
+     "pre_process_code": "config['body']['text'] = 'x=' + str(vars.get('x')) + ';y=' + str(vars.get('y'))\nconfig['body']['product_id'] = 'p1'\nconfig['body']['reason'] = 'refused'"
+    }
+   ],
+   "response_mapping": [],
+   "transitions": [
+    {
+     "target_node": "acct2",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ]
+  },
+  "acct2": {
+   "name": "acct2",
+   "node_type": "api_request",
+   "passthrough": true,
+   "passthrough_default_transition": "dump2",
+   "on_enter": {
+    "type": "silent"
+   },
+   "pre_actions": [
+    {
+     "type": "function",
+     "config": {
+      "timeoutMs": 12000,
+      "maxRetries": 0
+     },
+     "function": {
+      "name": "get_account_b",
+      "handler": "__function__:api_call",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string",
+         "default": "https://freya-bank-mock.freyavoice.workers.dev/v1/get_account"
+        },
+        "method": {
+         "type": "string",
+         "default": "POST"
+        },
+        "headers": {
+         "type": "object",
+         "properties": {
+          "Content-Type": {
+           "type": "string",
+           "default": "application/json"
+          }
+         }
+        },
+        "body": {
+         "type": "object",
+         "properties": {
+          "customer_id": {
+           "type": "string",
+           "default": "{{customer_id}}"
+          }
+         },
+         "required": []
+        }
+       }
+      }
+     }
+    }
+   ],
+   "response_mapping": [],
+   "transitions": [
+    {
+     "target_node": "dump2",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ]
+  },
+  "dump2": {
+   "name": "dump2",
+   "node_type": "code",
+   "passthrough": true,
+   "passthrough_default_transition": "talk",
+   "on_enter": {
+    "type": "silent"
+   },
+   "pre_actions": [
+    {
+     "type": "function",
+     "function": {
+      "name": "code_exec",
+      "handler": "__function__:code_exec",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string",
+         "default": "import json\nout = []\ntry:\n    for k in ('prods', 'p0_due', 'ok_v', 'whole', 'first_obj', 'acct_response.data.products', 'acct_response.data.ok', 'acct2_response.data.products', 'acct_response.status_code', 'acct_success_count'):\n        v = vars.get(k)\n        out.append(k + '=' + type(v).__name__ + ':' + repr(v)[:260])\n    ks = sorted(k for k in vars if (k.startswith('acct') and 'header' not in k))\n    out.append('NKEYS=' + str(len(ks)))\n    for k in ks[:14]:\n        out.append(k + '=' + type(vars[k]).__name__ + ':' + repr(vars[k])[:60])\nexcept Exception as e:\n    out.append('ERR ' + repr(e))\nvars['dump2'] = ' || '.join(out)\nvars['y'] = 'fromcode'\n"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "response_mapping": [],
+   "transitions": [
+    {
+     "target_node": "talk",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ]
+  },
+  "talk": {
+   "name": "talk",
+   "node_type": "conversation",
+   "on_enter": {
+    "type": "tts",
+    "text": "ready"
+   },
+   "task_message": "Say the single word ready and nothing else.",
+   "role_message": "",
+   "tools": [],
+   "transitions": [],
+   "pre_actions": []
+  }
+ },
+ "global_nodes": {},
+ "tools": [],
+ "system_prompt": "",
+ "test_variables": {
+  "first_name": "Sofia",
+  "last_name": "Almeida",
+  "title": "Ms",
+  "now": "2026-10-14T11:00"
+ }
+}

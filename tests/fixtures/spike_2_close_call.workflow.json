@@ -1,0 +1,187 @@
+{
+ "initial_node": "hello",
+ "nodes": {
+  "hello": {
+   "name": "hello",
+   "node_type": "conversation",
+   "on_enter": {
+    "type": "tts",
+    "text": "Hi there."
+   },
+   "task_message": "Say hello briefly then wait.",
+   "role_message": "",
+   "tools": [],
+   "transitions": [
+    {
+     "target_node": "setc",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ],
+   "pre_actions": []
+  },
+  "setc": {
+   "name": "setc",
+   "node_type": "code",
+   "passthrough": true,
+   "passthrough_default_transition": "wait",
+   "on_enter": {
+    "type": "silent"
+   },
+   "pre_actions": [
+    {
+     "type": "function",
+     "function": {
+      "name": "code_exec",
+      "handler": "__function__:code_exec",
+      "description": "",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "code": {
+         "type": "string",
+         "default": "vars['final_outcome'] = 'no_promise'\nvars['final_reason'] = 'refused'\n"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "response_mapping": [],
+   "transitions": [
+    {
+     "target_node": "bye",
+     "description": "mode node",
+     "condition": {
+      "logic": "or",
+      "conditions": [
+       {
+        "variable": "mode",
+        "operator": "equals",
+        "operand": "node",
+        "mode": "exact"
+       }
+      ]
+     }
+    },
+    {
+     "target_node": "wait",
+     "description": "always",
+     "condition": {
+      "operator": "always"
+     }
+    }
+   ]
+  },
+  "wait": {
+   "name": "wait",
+   "node_type": "conversation",
+   "on_enter": {
+    "type": "tts",
+    "text": "waiting"
+   },
+   "task_message": "Say the word waiting and nothing else.",
+   "role_message": "",
+   "tools": [],
+   "transitions": [],
+   "pre_actions": []
+  },
+  "bye": {
+   "name": "bye",
+   "node_type": "end_call",
+   "on_enter": {
+    "type": "silent"
+   },
+   "disable_inactivity_monitor": true,
+   "transitions": [],
+   "terminal": {
+    "type": "function",
+    "function": {
+     "name": "bye_end",
+     "handler": "__function__:end_call",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "message_mode": {
+        "type": "string",
+        "default": "custom"
+       },
+       "spoken_message": {
+        "type": "string",
+        "default": "Goodbye."
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "global_nodes": {},
+ "tools": [
+  {
+   "type": "function",
+   "config": {
+    "timeoutMs": 12000,
+    "maxRetries": 0,
+    "alwaysRunsAt": [
+     "end_of_call"
+    ]
+   },
+   "function": {
+    "name": "close_call",
+    "handler": "__function__:api_call",
+    "description": "Record how the call ended.",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "url": {
+       "type": "string",
+       "default": "https://freya-bank-mock.freyavoice.workers.dev/v1/close_call"
+      },
+      "method": {
+       "type": "string",
+       "default": "POST"
+      },
+      "headers": {
+       "type": "object",
+       "properties": {
+        "Content-Type": {
+         "type": "string",
+         "default": "application/json"
+        }
+       }
+      },
+      "body": {
+       "type": "object",
+       "properties": {
+        "customer_id": {
+         "type": "string",
+         "default": "{{customer_id}}"
+        },
+        "outcome": {
+         "type": "string",
+         "default": "promise"
+        },
+        "reason": {
+         "type": "string",
+         "default": "{{final_reason}}"
+        }
+       },
+       "required": []
+      }
+     }
+    }
+   },
+   "pre_process_code": "sys_argv_flag = 'positive'\ntry:\n    b = config.get('body')\n    avail = [k for k in ('final_outcome', 'final_reason', 'customer_id', 'first_name', 'now', 'call.call_end_reason') if vars.get(k)]\n    b['outcome'] = str(vars.get('final_outcome') or 'NOVARS')\n    b['reason'] = str(vars.get('final_reason') or 'NOVARS') if len(sys_argv_flag) else 'seen:' + ','.join(avail) + '|n=' + str(len(vars))\nexcept Exception as e:\n    config['body']['reason'] = 'ERR ' + repr(e)[:80]\n"
+  }
+ ],
+ "system_prompt": "",
+ "test_variables": {
+  "first_name": "Sofia",
+  "last_name": "Almeida",
+  "title": "Ms",
+  "now": "2026-10-14T11:00"
+ }
+}

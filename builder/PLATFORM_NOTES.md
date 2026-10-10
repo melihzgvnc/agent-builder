@@ -1,0 +1,52 @@
+# Platform notes (Phase 2a spikes)
+
+Generic facts about the workflow platform, found by driving tiny workflows through the chat route. Names are neutral: `tool_a`, `tool_b`, `field_x`, "the lifecycle close tool". Status: confirmed / refuted / partial / untested.
+
+## Q1. Hooks share `vars` within one call: CONFIRMED
+- A `post_process_code` of `tool_a` wrote `vars['x'] = 'seen'`. A code node wrote `vars['y'] = 'fromcode'`. The `pre_process_code` of a later `tool_b` (in a later node) built `config['body']['text'] = 'x=' + vars.get('x') + ';y=' + vars.get('y')`.
+- The `function_call_start` args of `tool_b` showed the body text `x=seen;y=fromcode`. So pre-hooks read variables written by earlier post-hooks and by code nodes.
+- A pre-hook can also overwrite other body fields (for example an id or an enum value). The overwritten value is what was sent.
+- A post-hook can add keys to `result['data']` (seen: `injected`). They appear in the `function_call_complete` result and in the flattened `<node>_response.data.<key>` variables, so the flattened variables do follow post-hook changes to `result`.
+- Hook-written variables show up in the `route_evaluated` `variable_table`.
+
+## Q2. Lifecycle close tool (`alwaysRunsAt: ["end_of_call"]`): CONFIRMED
+- Its `pre_process_code` can rewrite `config['body']` from `vars`. Test: body default outcome was a literal that the bank would reject as wrong; the hook set `outcome` and `reason` from `vars['final_outcome']` / `vars['final_reason']` (written earlier by a code node). The bank ledger then held exactly those values (ground truth, read from the ledger route after the call).
+- Ran when the call ended by `/chat/end` in a conversation node: yes.
+- Ran when the call ended through an `end_call` node: yes (same ledger evidence; `endedReason` was the assistant-ended value).
+- Variables the hook could read (probe: hook listed which of a fixed key list were truthy, and counted keys): every workflow variable. Seen present: `final_outcome`, `final_reason` (code-node variables), `customer_id`, `first_name`, `now` (call variables). The key count was 68 to 69. Not present in `vars`: `call.call_end_reason` (that template exists only in `{{...}}` defaults, not as a key in `vars`). Keys from the `call.*` family that exist at runtime are `call.call_id`, `call.direction`, `call.phone_number`, `call.customer_phone_number`.
+- A baked default `{{var}}` in the close tool resolves from variables set by code nodes (the reason default worked).
+- What happens when a hook raises was not tested. Wrap hooks in try/except.
+- Design consequence: compute the final outcome and reason in code nodes or hooks (`vars['final_outcome']`, `vars['final_reason']`) and let the close tool's pre-hook copy them into the body. The model need not fill them.
+- Fallback if this ever fails: close outcome as an enum the model fills from a code-computed reason list written in `task_message`.
+
+## Q3. `code_exec` as a model-called tool: UNTESTED
+- Chat service was down (503/504) when this was due. Driver is ready: `scripts/spikes/spike3_model_tools.py`.
+- Fallback design: do not use `code_exec` as a model tool. Use post-hooks / pre-hooks on `api_call` tools and `code` nodes only.
+
+## Q4. Shape of a list from an `api_request` node in a code node: CONFIRMED (flattened keys)
+- A node-level `response_mapping` with path `data.<list>` leaves the mapped variable UNSET (None in `vars`, absent from the variable table). A mapping to an object path (`data`, `data.<list>.0`) is also unset.
+- Mapping to a scalar leaf works: `data.<list>.0.<field>` gave an int; `data.ok` gave the string `'true'`.
+- With or without a mapping, the engine writes flattened keys into `vars`, named after the NODE for `pre_actions`: `<node>_response.data.<list>.<i>.<field>` (e.g. `acct_response.data.list.0.field_x`). For a model-called tool the prefix is the tool name.
+- Types seen in `vars` inside a code node: numbers are Python `int` (`220` stayed int), strings are `str`, booleans are the STRING `'true'` (`data.ok`), `status_code` is `int`, `<node>_success_count` is `int`. The list itself is never a Python list or a JSON string.
+- Code must rebuild the list: loop `i = 0, 1, ...` while `vars.get(prefix + '.%d.id' % i)` is not None. Keep a per-field `int()` / `float()` guard. Only fields present in the response get keys (optional fields are simply absent).
+- Also in `vars` after a node: `<node>_response.status`, `.message`, `.status_code`, `.header.<Name>`, `<node>_status_code`, `<node>_success_count`, `<node>.current_turns`, `<node>.total_turns`.
+
+## Q5. Tool-level `response_mapping` / counters -> transition: UNTESTED
+- Not reached before the chat outage. Driver ready (`spike3_model_tools.py`, modes a and b).
+- Fallback / design: the closing path is "close tool result -> variable -> transition to an `end_call` node". Check it first in the first practice run. Test both the mapped variable and the flattened `<tool>_response.data.<key>` in an OR group, and also `<tool>_success_count` greater than 0.
+- Keep a code-node route as a backup: have the pre-hook or a code node set a string flag and route on that.
+
+## Q6. Post-hook `what_to_do_next`, pre-hook override of model fields: UNTESTED
+- Not reached before the outage. (Q1 already shows a pre-hook can overwrite request body fields; only the model-called-tool case is untested.)
+- Design: force ids from code in the pre-hook (`config['body']['id_field'] = vars[...]`) and add `result['data']['what_to_do_next']` in the post-hook. Check in the first practice run.
+
+## Chat route and runtime facts the compiler must know
+- The chat route SKIPS the pre-actions of an initial `api_request` or `code` node (no events at all; its variables stay unset). Start every workflow on a `conversation` node with an `always` transition into the first engine-run node. The chain then runs after the first user message.
+- An `always` transition out of the initial conversation node only fires on the NEXT user message (the first routing is suppressed: "Missing prior assistant message").
+- A passthrough chain (several `api_request` / `code` nodes, each with an `always` transition) runs in a single chat turn, about 1 to 4 seconds for a 7-node chain.
+- The chat turn in which the call ends through an `end_call` node returns HTTP 504 after about 12 to 18 s, although the engine did hang up and the end-of-call tool ran.
+- Chat turns normally take about 1.5 to 5 s. During model trouble they take 60 s and then 504, or fail at once with 503. This happened to every workflow, including the base example, and a new API key in the same workspace did not help.
+- Drivers that crashed after a 504 left chat calls open. Whether open calls affect the outage was not determined. Call `/api/v2/chat/end` in a `finally`.
+- Flattened result keys for `pre_actions` nodes use the NODE name (`<node>_response.*`), not the tool name.
+- `function_call_start` args for `api_call` show the full final request. This is the ground truth for what a pre-hook produced.
+- The workspace list route returned 3 workflows after the spikes.
