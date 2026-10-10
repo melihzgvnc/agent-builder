@@ -1,0 +1,424 @@
+# Extraction Log for Task 9 Variants
+# Started: $(date)
+# Model: anthropic/claude-haiku-5.5 (OpenRouter)
+# Process: live extractor with fallback retry
+
+config: LLMConfig(base_url='https://openrouter.ai/api', model='anthropic/claude-haiku-5.5', key=<hidden>)
+wrote tests/fixtures/spec_variant_1.json
+fallback=False mode=auto repairs=0
+calls=3 input_tokens=28071 output_tokens=24462 seconds=100.1
+verbatim_rules=35 missing_after=4
+warnings (34):
+  - coverage: added verbatim rule (debt): Say that you are calling about an overdue payment. Name the product in words: "auto loan ending 5892 [Product naming example with ending digits is not represented; spec drops the ending-digits wording]
+  - coverage: added verbatim rule (global): This brief is a minimal test case: single product, two identity questions, no transfer, no notes, si [No-transfer scope is not respected; close_call still allows the 'transferred' outcome]
+  - coverage: 4 brief token(s) still not found in the spec
+  - grounding: identity_field 'ssn_last4' is not in the tool API allowed values ['date_of_birth', 'phone_last4']; left unmatched
+  - grounding: identity_field 'mother_maiden_name' is not in the tool API allowed values ['date_of_birth', 'phone_last4']; left unmatched
+  - Outcome name conflict: the brief's outcome table says 'promised', but the close_call tool allows 'promise'. Used 'promise' from the tool API.
+  - Reason values for close_call are not listed in the tool API; the reasons used (unclear, callback, no_callback, wrong_number, deceased, failed, declined, refused, hardship, dispute, service_error) are taken from the brief.
+  - Identity question 1 in the brief asks for the last four digits of the SSN. The API verify_identity allows only date_of_birth and phone_last4. No API field matches; the brief's wording was used as 'ssn_last4'. Confirm the field name with the API owner.
+  - Identity question 2 (mother's maiden name) has no matching API field; 'mother_maiden_name' was used as the brief's own term.
+  - Identity question prompts are not given word for word in the brief; the prompts used are English renderings.
+  - verify_identity hint 'day_month_swapped' is in the API, but the brief gives no instruction for it. No hints were added; counts_as_wrong is unknown.
+  - Floor: the brief states the floor as 25% of the full past-due amount. The account response has no floor field, and the schema cannot carry a percentage, so floor_fields and floor_default_field were omitted. The 25% rule is kept in verbatim_rules. The agent must compute it only from the rule text.
+  - Product naming: the brief's example 'auto loan ending 5892' gives digits that are not defined by any account field for car_loan (card_last4 is for credit cards only). The template 'auto loan' was used. The ending digits source is not stated. Example digits were not copied.
+  - Rule 27 (hardship) says close as no_promise/hardship, but also says a customer who still names a date or amount has the promise recorded. These are kept together in the hardship intent notes and verbatim rule.
+  - Rule 26 says the attempt is the only one; rule 25 says a flat refusal uses one attempt. Persuasion attempts = 1.
+  - Rule 3 'after the second ask' is read as max_confirmation_asks = 2.
+  - Rule 13: the number of refusals before closing is not a number; 'explain once, then close if still declining' was used. max_refusals was omitted.
+  - Rule 21: 'too much' gives one floor offer (offer_floor_times 1). Behaviour when the customer offers less than the floor, or more than the full amount, is not stated and was omitted.
+  - Promise date: the brief does not say the promise date must be a business day, so must_be_business_day was set to false. Roll rule for a 45-calendar-day deadline that falls on a weekend or holiday is not stated; roll was omitted (none).
+  - Calendar: week start, the meaning of 'next' and 'this' weekday, and the vague-period handling are not stated; those fields were omitted.
+  - Currency is not stated in the brief; omitted.
+  - Goodbye text is not given; goodbye_before_close.text omitted.
+  - The customer service number for the scam answer is not given in the brief; the sentence was written without a number.
+  - The sentence for 'a request for a human' ('Can I help you with this first?') and the sentence for lower amounts ('I do not have the authority to do that.') are English renderings; the brief gives the instruction, not exact words.
+  - Account days_late values outside 1 to 45 are not covered by any band; behaviour is not stated.
+  - Whether intents apply before verification is not stated. Defaults were used (after verification only).
+  - Cancellation or change of a recorded promise is not stated beyond the readback change in rule 30; allow_change_or_cancel was omitted.
+  - Whether a refused offer must not be repeated is not stated; do_not_repeat_refused_offer was omitted.
+  - Opening applies_to_everyone is not stated; omitted.
+  - The 'I could not record your promise.' sentence is an English rendering of 'say you could not record it'.
+  - The sympathy sentence for hardship is not given word for word; the sympathy action has no text.
+  - The 'Please use our mobile app or visit a branch.' sentence is an English rendering of 'Tell the customer to use the mobile app or a branch.'
+  - The 'These questions protect your account.' explanation is an English rendering of the brief's instruction.
+  - Multi-product is disabled (single product in the brief).
+=== VARIANT 2 EXTRACTION ATTEMPT 2 (retry) ===
+config: LLMConfig(base_url='https://openrouter.ai/api', model='anthropic/claude-haiku-5.5', key=<hidden>)
+wrote tests/fixtures/spec_variant_2.json
+fallback=False mode=json repairs=2
+calls=6 input_tokens=83807 output_tokens=73668 seconds=290.2
+verbatim_rules=37 missing_after=6
+warnings (35):
+  - coverage: added verbatim rule (opening): Address the customer as title plus last name. [customer form of address not stated]
+  - coverage: added verbatim rule (global): Pass it to every tool call. [customer_id usage rule not stated]
+  - coverage: added verbatim rule (negotiate): Ask first: "Can you promise on all four products today?". If not, go through products one at a time  [one-at-a-time fallback after the all-products ask not in verbatim_rules]
+  - coverage: added verbatim rule (closing): When all products have been discussed (promised, refused, or noted), read all promises back together [readback trigger condition not in verbatim_rules]
+  - coverage: 6 brief token(s) still not found in the spec
+  - grounding: identity_field 'ssn_middle_four' is not in the tool API allowed values ['date_of_birth', 'phone_last4']; left unmatched
+  - grounding: identity_field 'security_answer' is not in the tool API allowed values ['date_of_birth', 'phone_last4']; left unmatched
+  - grounding: identity_field 'account_opened_year' is not in the tool API allowed values ['date_of_birth', 'phone_last4']; left unmatched
+  - grounding: identity_field 'pin' is not in the tool API allowed values ['date_of_birth', 'phone_last4']; left unmatched
+  - grounding: close_outcome 'promised' mapped to API value 'promise'
+  - grounding: close_outcome 'declined' mapped to API value 'no_promise'
+  - grounding: close_outcome 'no_contact' mapped to API value 'not_reached'
+  - grounding: close_outcome 'service_error' is not in the tool API allowed values ['promise', 'paid', 'transferred', 'no_promise', 'not_verified', 'not_reached']; left unmatched
+  - grounding: account_field 'product_type' is not in the tool API allowed values ['all_verified', 'amount', 'answer', 'card_last4', 'customer_id', 'date', 'days_late', 'error', 'field', 'hint', 'instalment_amount', 'minimum_payment', 'ok', 'outcome', 'past_due', 'product_id', 'products', 'promise_id', 
+  - Validation fix: identity question prompts and opening.confirmation_question are now plain strings instead of template objects.
+  - No tool API summary was supplied. Account field names (product_id, product_type, days_late), identity field names (ssn_middle_four, security_answer, account_opened_year, pin), the past_due_amount field name and the tool field maps are not verified against the API. Replace them with the exact API key
+  - products_key is not stated in the brief and was omitted.
+  - No currency is stated in the brief; the floor amounts use a dollar sign but currency was left unset.
+  - The brief does not state an agent language explicitly; language is set to en because the brief is in English.
+  - Floor amounts are a percentage for business credit line and inventory loan and fixed for equipment lease and cash advance. PolicySpec floor_fields can only reference account fields, so floor_fields was omitted and the floor rules are kept in verbatim_rules.
+  - Rule 17 refers to rule 19 for after-deadline dates; the after-deadline rule is rule 20. Applied rule 20.
+  - The lateness table uses Days Late ranges 1-14 and 15-90, while the introduction says 1 to 90 business days overdue. The table ranges were used.
+  - The closing outcome table lists no_contact for customer unreachable or callback scheduled, but rules 6 and 7 close as not_reached with reasons callback and no_callback. Both are kept in outcome_table; the brief does not say which wins.
+  - The closing outcome table lists declined for all products refused, but the multi-product summary closes as no_promise with that reason. Both are kept; the brief does not say which wins.
+  - The brief names the fixed number of callback hours per weekday. The schema has one hour window, so Monday to Wednesday 08:00-18:00 is used and the Thursday window and Friday exclusion are kept in verbatim_rules.
+  - The callback window is today or the next business day: n is set to 1 from the brief text.
+  - No week start day, one-date-for-all rule, rounding, below-floor or above-full rule, or cancellation rule is stated; these fields were omitted.
+  - The aggregation default for all products is not stated; the paid-first case is kept in verbatim_rules because the schema cannot express it fully.
+  - No band roll rule is stated for business-day deadlines; roll was omitted.
+  - The brief does not state the exact wording of the promise read-back or the success sentence; the read-back uses the confirmation question only.
+  - The ask_once question text 'Can I help you?' is a paraphrase of 'ask once whether you can help'.
+  - Weekend days Saturday and Sunday are derived from 'Business days are Monday to Friday'.
+  - The brief does not say what to do when attempts are exhausted beyond moving to the next product; no outcome was assigned.
+  - The brief does not say whether the agent may disclose the debt when identity fails; disclose_debt is set to false from the rule that the debts are not stated after failure.
+  - The brief does not define when the scam and unanswerable question intents apply before verification; defaults were kept.
+=== VARIANT 3 EXTRACTION ATTEMPT 1 ===
+config: LLMConfig(base_url='https://openrouter.ai/api', model='anthropic/claude-haiku-5.5', key=<hidden>)
+wrote tests/fixtures/spec_variant_3.json
+fallback=False mode=json repairs=2
+calls=6 input_tokens=67134 output_tokens=64406 seconds=253.7
+verbatim_rules=37 missing_after=5
+warnings (52):
+  - coverage: added verbatim rule (opening): Address the customer as title plus last name. [address-form rule for title and last name not captured]
+  - coverage: added verbatim rule (third_party): Call `schedule_callback` with the date and the time, then close as `not_reached` / `callback`. [schedule_callback tool call not mapped in spec]
+  - coverage: added verbatim rule (identity): Ask three security questions, one at a time: first the last four digits of the SSN, then the date of [identity question sequence absent from spec]
+  - coverage: added verbatim rule (identity): Call `verify_identity` with each answer. [verify_identity call per answer not captured]
+  - coverage: added verbatim rule (identity): A wrong answer may be asked again. Three wrong answers in total end the check, whichever question th [wrong-answer retry limit not captured]
+  - coverage: added verbatim rule (identity): A date answer with day and month swapped: ask the customer to say the month as a word. That retry do [day/month swap retry rule absent]
+  - coverage: added verbatim rule (identity): After three wrong answers, do not state the debts. Tell the customer to use the mobile app or contac [post-failure behaviour not captured beyond outcome row]
+  - coverage: added verbatim rule (identity): If the customer does not want to answer, explain once that the questions protect their account. If t [decline explanation step absent]
+  - coverage: added verbatim rule (debt): After all three questions pass, call `get_account`. [get_account call not mapped in spec]
+  - coverage: added verbatim rule (debt): Say that you are calling from River Bank about overdue payments. Name each product: "secured loan 34 [debt statement script and ordering absent]
+  - coverage: added verbatim rule (global): The **deadline** is 30 calendar days from today for all products. [deadline definition present only as band data, not as stated rule]
+  - coverage: added verbatim rule (negotiate): A promise date must be today or later and not after the deadline. [promise date validity rule absent]
+  - coverage: added verbatim rule (negotiate): If the customer names a date after the deadline, say the latest date you can record is the deadline  [late-date handling absent]
+  - coverage: added verbatim rule (negotiate): Ask for the full past-due amount per product first. Never ask "how much can you pay?". [amount-ask order and prohibited phrasing absent]
+  - coverage: added verbatim rule (negotiate): The **floor** is 30% of the full past-due amount per product. [30% floor rule missing from spec]
+  - coverage: added verbatim rule (negotiate): If the customer says the full amount is too much, offer the floor once. Say that the rest stays over [floor offer script absent]
+  - coverage: added verbatim rule (negotiate): If the customer proposes an amount from floor to full, both included, accept it. [accepted amount range absent]
+  - coverage: added verbatim rule (negotiate): Ask first: "Can you promise on both products today?". If not, go through products one at a time. [opening promise question and product sequence absent]
+  - coverage: added verbatim rule (negotiate): A date or amount the customer proposes is never a refusal. [proposal-is-not-refusal rule absent]
+  - coverage: added verbatim rule (negotiate): Attempt 1: propose the deadline with the full amount. [persuasion attempt 1 content absent]
+  - coverage: added verbatim rule (negotiate): Attempt 2: propose the deadline with the floor amount. [persuasion attempt 2 content absent]
+  - coverage: added verbatim rule (negotiate): When attempts are exhausted for a product, move to the next. [move-on rule after exhausted attempts absent]
+  - coverage: added verbatim rule (negotiate): If the customer mentions illness or job loss, say one short sentence of sympathy and make no persuas [hardship handling beyond outcome row absent]
+  - coverage: added verbatim rule (negotiate): Never offer discount, waiver, instalment plan or any term not in this brief. [prohibited offers not captured]
+  - coverage: added verbatim rule (closing): When all products have been discussed, read all promises back together and ask "Do you confirm?". [read-back and confirmation question absent]
+  - coverage: added verbatim rule (closing): After confirmation, call `create_promise` once per product with a promise. [create_promise per-product call absent]
+  - coverage: added verbatim rule (closing): If the customer changes a date or amount when confirming, check it against "Dates" and "Amounts" sec [re-validation on change absent]
+  - coverage: added verbatim rule (closing): Say the promise is recorded only after `create_promise` returns `ok: true`. [recording confirmation gate absent]
+  - coverage: added verbatim rule (closing): After all promises are recorded, say: "You will receive a text message confirming these promises." [closing text-message statement absent]
+  - coverage: added verbatim rule (closing): "This debt is not mine": do not argue. Close as `no_promise` / `dispute`. [do-not-argue instruction absent]
+  - coverage: added verbatim rule (closing): A request for restructuring or lower instalments: call `transfer_to_agent` with queue `restructuring [transfer queue restructuring not captured]
+  - coverage: added verbatim rule (closing): A request for a human: ask once whether you can help. If they insist, call `transfer_to_agent` with  [human-transfer ask-once step and queue absent]
+  - coverage: added verbatim rule (global): "Is this a scam?": say they can verify the call by phoning River Bank's customer service number, and [scam-question response absent]
+  - coverage: added verbatim rule (global): A question you cannot answer: say you do not have that information. [unknown-question response absent]
+  - coverage: added verbatim rule (global): Products discussed in `get_account` order. [product discussion order absent]
+  - coverage: added verbatim rule (negotiate): One date for all products: if the customer names one date for both, record it for both (capped to ea [shared-date rule absent]
+  - coverage: added verbatim rule (closing): Promises are recorded per product only; no notes are recorded. [no-notes recording rule absent]
+  - coverage: 5 brief token(s) still not found in the spec
+  - grounding: close_outcome 'promised' mapped to API value 'promise'
+  - grounding: close_outcome 'declined' mapped to API value 'no_promise'
+  - grounding: close_outcome 'service_error' is not in the tool API allowed values ['promise', 'paid', 'transferred', 'no_promise', 'not_verified', 'not_reached']; left unmatched
+  - Missing field: bands deadline roll is not stated; the default 'none' is used and no roll rule for a calendar-day deadline that lands on a holiday or weekend is given.
+  - Missing field: the brief does not say whether a promise date must be a business day; only the callback rule states business days, so no promise business-day rule is set.
+  - Missing field: calendar week_starts_on is not stated; default not set.
+  - Missing field: weekday_semantics for 'next <weekday>' and 'this <weekday>' is not stated; left unresolved.
+  - Missing field: vague_period handling for phrases such as 'next week' is not stated.
+  - Missing field: the brief does not give the text of the goodbye; goodbye_before_close.text is omitted.
+  - Missing field: the brief does not give an aggregation default for outcomes other than promised and transferred; aggregation.default is omitted.
+  - Missing field: tool API summary was not provided; tool field names and tools mapping are omitted.
+  - Conflict in closing: item 33 closes as no_promise / service_error, while the outcome table lists service_error with no reason; both rows are kept as written.
+  - Conflict in closing: item 41 closes as no_promise / refused, while the outcome table lists declined for no promises with a product actively refused; both rows are kept as written and the agent must choose by the situation.
+  - Missing outcome rows: outcomes referenced in the brief (not_reached with reasons, not_verified with reasons, no_promise with reasons, paid, transferred with reasons) are not in the outcome table of the brief and were added from the rule text.
+=== VARIANT 3 EXTRACTION ATTEMPT 3 (re-extract) ===
+config: LLMConfig(base_url='https://openrouter.ai/api', model='anthropic/claude-haiku-5.5', key=<hidden>)
+wrote tests/fixtures/spec_variant_3.json
+fallback=False mode=json repairs=1
+calls=5 input_tokens=57318 output_tokens=65110 seconds=267.7
+verbatim_rules=40 missing_after=4
+warnings (35):
+  - coverage: added verbatim rule (global): A request for restructuring or lower instalments: call `transfer_to_agent` with queue `restructuring [restructuring request rule has no verbatim_rules entry (only the intent triggers represent it)]
+  - coverage: 4 brief token(s) still not found in the spec
+  - grounding: identity_field 'ssn_last_four' is not in the tool API allowed values ['date_of_birth', 'phone_last4']; left unmatched
+  - grounding: identity_field 'security_answer' is not in the tool API allowed values ['date_of_birth', 'phone_last4']; left unmatched
+  - grounding: close_outcome 'promised' mapped to API value 'promise'
+  - grounding: close_outcome 'declined' mapped to API value 'no_promise'
+  - grounding: close_outcome 'service_error' is not in the tool API allowed values ['promise', 'paid', 'transferred', 'no_promise', 'not_verified', 'not_reached']; left unmatched
+  - The tool API summary was not supplied with this request. account_fields.product_id, identity field names (ssn_last_four, date_of_birth, security_answer), and amounts.full_amount_field are placeholders and must be matched to the API before use.
+  - The brief does not state the account field names for product type, days late, or the products list; account_fields omits them.
+  - The brief does not state the currency; meta.currency is omitted. Language is not stated explicitly; meta.language is omitted (schema default en).
+  - The brief does not state an aggregation rule for several products; closing.aggregation is omitted.
+  - The brief does not state the first day of the week, the meaning of 'next' or 'this' weekdays, or a rule for vague periods; calendar omits week_starts_on, weekday_semantics and vague_period.
+  - The floor is a percentage (30% of the full past-due amount) and the brief gives no floor account field; amounts omits floor_fields, floor_default_field and rounding. The percentage rule is kept in verbatim_rules.
+  - The brief does not name product type values; debt_statement.product_names is omitted. The product names given in the brief are examples and were not copied.
+  - The brief does not state the account fields to state in the debt statement; state_fields is omitted.
+  - The brief does not give exact prompts for the three security questions; the prompts in identity.questions are paraphrases of the brief's instructions.
+  - The brief does not give the answer format or reading order for the date of birth; numeric_reading_order is omitted.
+  - The brief does not give exact wording for the sympathy sentence, the scam answer, the robot answer, or the 'I do not have that information' answer; the texts used are paraphrases or the brief's own words.
+  - The brief does not state whether the others may answer security questions or hear account details; those fields are omitted.
+  - Conflict: step 26 says 'uses one persuasion attempt per product' but then lists two attempts (attempt 1 and attempt 2) per product. The spec follows the two listed attempts, persuasion_attempts = 2.
+  - Conflict: step 33 says close as no_promise / service_error, while the outcome table lists service_error with no reason. Both are kept in closing.outcome_table.
+  - The outcome table in the brief has only four rows, but the brief's steps refer to further outcomes (not_reached with callback, no_callback, wrong_number, deceased, unclear; not_verified with failed, declined; no_promise with hardship, dispute, refused, service_error; paid). These rows were added fro
+  - Step 6 says 'one business day' in words; the callback window is expressed as today_or_next_business_days with n = 1 (the next business day).
+  - The brief says the callback date must be Monday to Friday; the holiday list (2026-12-25, 2027-01-01) is kept in calendar.holidays.
+  - The brief does not state a rule for when attempts are exhausted in terms of outcome; persuasion.on_exhausted is omitted. The brief says only to move to the next product.
+  - The brief does not state whether a promise date must be a business day; promise_rules.must_be_business_day and on_non_business_day are omitted. The business-day definition is kept in verbatim_rules.
+  - The brief does not state the roll for the 30-calendar-day deadline when it lands on a non-business day; bands.deadline.roll is omitted (default none).
+  - The hardship rule closes one product as no_promise / hardship, but the call-level close action would end the whole call in a multi-product case. The intent uses skip_promise, and the per-product outcome is kept in outcome_table and verbatim_rules.
+  - The 'human' intent: the brief says to ask once whether you can help, then transfer if they insist. The spec uses ask_once followed by offer_transfer with on_decline empty; the exact question wording is a paraphrase.
+  - Intent trigger phrases are paraphrases of the brief's descriptions (for example 'I want to speak to a human', 'I am ill', 'I lost my job', 'I do not want to talk'), not quoted customer words.
+  - The brief does not give the wording of the request for a human or the dispute trigger beyond the quoted phrase; only quoted phrases were used as triggers.
+  - The brief does not state whether the customer may cancel or change a promise; allow_change_or_cancel is omitted. The change rule is in verbatim_rules.
+  - The brief does not state the on_transfer or on_promise_failure behaviour for several products beyond the failure outcome; multi_product.on_transfer is omitted.
+  - The brief gives example values (secured loan 3456, revolving credit 4567, example customer id and dates) that are not policy; they were not copied into any field.
+  - Per-product closes (paid, dispute, refused) are written as call-level close actions because the brief gives them as call outcomes; in a multi-product call this interacts with the aggregation rule, which is missing.
+=== VARIANT 1 RE-EXTRACTION ===
+config: LLMConfig(base_url='https://openrouter.ai/api', model='anthropic/claude-haiku-5.5', key=<hidden>)
+wrote tests/fixtures/spec_variant_1.json
+fallback=False mode=auto repairs=0
+calls=2 input_tokens=26137 output_tokens=22736 seconds=92.0
+verbatim_rules=24 missing_after=4
+warnings (29):
+  - coverage: added verbatim rule (opening): If the customer asks whether you are a robot or an AI, say that you are Summit Bank's digital assist [Continue-the-call instruction after the AI answer is missing]
+  - coverage: added verbatim rule (negotiate): When the attempt is used up, stop. Close as no_promise / refused. [Explicit stop instruction after the exhausted persuasion attempt is not represented]
+  - coverage: 4 brief token(s) still not found in the spec
+  - Outcome naming: the brief's closing table lists only 'promised', but the close_call API enum is 'promise'. Used 'promise' from the API.
+  - The brief's closing table says no other outcomes are permitted, yet its rules use no_promise, paid, not_verified and not_reached. Used the outcome and reason pairs stated in the rules, all of which are in the API outcome enum.
+  - Close reasons (unclear, callback, no_callback, wrong_number, deceased, failed, declined, refused, hardship, dispute, service_error) are not in the close_call API; used the brief's own words as free text.
+  - Floor: the brief states the floor is 25% of the full past-due amount, but no account field holds the floor and no floor_fields mapping can be built. The floor rule is kept verbatim. Floor field is missing.
+  - Behaviour when the customer offers less than the floor is not stated in the brief. Above_full behaviour is not stated either.
+  - Rounding of amounts is not stated.
+  - Product name: the brief's example 'auto loan ending 5892' is only an example. No API field gives the last four digits of a loan (card_last4 is for credit cards only), so the product template is 'auto loan' only. The example digits were not copied.
+  - Currency is not stated in the brief.
+  - Identity hint 'day_month_swapped' is returned by the API but the brief gives no instruction for it, so no hint entry was made.
+  - Identity question prompts: the brief describes what to ask but gives no exact wording; the prompts used are paraphrases.
+  - The security question answer for phone_last4 is the last four digits of the phone number on file (four digits).
+  - Deadline roll: the brief does not say what happens if the 45-day deadline falls on a weekend or holiday; no roll was set (default none).
+  - Promise business-day requirement is not stated: the brief defines business days but does not say a promise date must be a business day. No must_be_business_day rule was set.
+  - Week start day, the meaning of 'next <weekday>' and 'this <weekday>', and handling of vague periods such as 'next week' are not stated in the brief.
+  - Callback window n=1 is an interpretation of 'today or the next business day'.
+  - Reasks: the brief says ask once for another time; reasks_when_outside set to 1.
+  - Scam answer: the brief gives no phone number for Summit Bank's customer service, so none was written.
+  - Human request (rule 36): the brief says ask once whether you can help first, then close if they insist. The ask_once action cannot express the insist check; the close is listed as the follow-up. The agent must apply the insist check itself.
+  - Hardship (rule 27) conflicts with close: the close ends the call, but the brief says that if the customer still names a date or an amount, the promise is recorded. The intent notes state this exception.
+  - Sympathy sentence: the brief asks for 'one short sentence of sympathy' without giving the words. 'I am sorry to hear that.' is a paraphrase written for the spec.
+  - Intent trigger phrases are paraphrases of the brief's descriptions, not exact customer phrases given by the brief.
+  - Says twice rule (rule 39): the trigger count is written as occurrences_before_action 2 for the do-not-want-to-talk intent.
+  - Account lookup: the brief states no lateness range outside 1 to 45 days and no action for accounts outside that band.
+  - Multi-product: the brief describes a single product, so multi_product is disabled.
+  - Change or cancellation of a promise after recording is not stated; only changes at the read-back step are covered.
+  - Intent 'I already paid' is not stated as applying before or after verification; default settings were used.
+=== VARIANT 2 RE-EXTRACTION ===
+config: LLMConfig(base_url='https://openrouter.ai/api', model='anthropic/claude-haiku-5.5', key=<hidden>)
+wrote tests/fixtures/spec_variant_2.json
+fallback=True mode=json repairs=0
+calls=3 input_tokens=47638 output_tokens=60000 seconds=259.3
+verbatim_rules=34 missing_after=0
+warnings (1):
+  - EXTRACTION FELL BACK to a minimal spec (all brief text kept as verbatim rules): _Degrade: 'extract_spec': no usable JSON in reply (output truncated at max_tokens)
+=== VARIANT 2 RE-EXTRACTION ATTEMPT 2 ===
+config: LLMConfig(base_url='https://openrouter.ai/api', model='anthropic/claude-haiku-5.5', key=<hidden>)
+wrote tests/fixtures/spec_variant_2.json
+fallback=False mode=json repairs=2
+calls=6 input_tokens=84453 output_tokens=71030 seconds=281.8
+verbatim_rules=39 missing_after=5
+warnings (36):
+  - coverage: added verbatim rule (negotiate): "Next <weekday>" means that weekday in the following calendar week. "This <weekday>" means the one i [weekday rule text missing from verbatim_rules; only structured calendar semantics kept]
+  - coverage: added verbatim rule (negotiate): When all products have been discussed (promised, refused, or noted), read all promises back together [readback timing condition missing; only the question is kept as a mandated sentence]
+  - coverage: added verbatim rule (negotiate): A request for restructuring, lower instalments, or a new plan: call `transfer_to_agent` with queue ` [transfer intent instruction not held verbatim]
+  - coverage: added verbatim rule (negotiate): A request for human support: ask once whether you can help. If they insist, call `transfer_to_agent` [human support transfer instruction not held verbatim]
+  - coverage: added verbatim rule (global): Apex Trust calls business customers who are 1 to 90 business days overdue on one to four products. [call scope (overdue range and product count) not represented]
+  - coverage: 5 brief token(s) still not found in the spec
+  - grounding: identity_field 'phone_last_four' mapped to API value 'phone_last4'
+  - grounding: close_outcome 'promised' mapped to API value 'promise'
+  - grounding: close_outcome 'declined' mapped to API value 'no_promise'
+  - grounding: close_outcome 'no_contact' mapped to API value 'not_reached'
+  - grounding: close_outcome 'service_error' is not in the tool API allowed values ['promise', 'paid', 'transferred', 'no_promise', 'not_verified', 'not_reached']; left unmatched
+  - Only one document was supplied and the tool API summary was not provided. Account field keys (product_id and the others), identity field names (date_of_birth, phone_last_four), the past-due amount key (past_due_amount) and the product type values are placeholders that must be verified against the AP
+  - account_fields: product type, days late and the products list key are not stated by the documents, so they are omitted.
+  - amounts.floor_fields omitted: the documents state the floors as percentages or fixed amounts but name no account field holding the lowest acceptable amount. The floor rules are kept in verbatim_rules.
+  - Identity prompts: the documents give only instructions for the prompts, not exact wording; the prompt text is taken from them. The brief says four security questions, but lists five prompts (date of birth, phone digits, two rephrased phone digit questions, date of birth again). All five are kept in 
+  - identity.hints omitted: no hint values are stated.
+  - identity.decline.max_refusals of 1 is inferred from 'explain once ... if they still decline'.
+  - Callback window: the brief gives different hours per weekday (Mon-Wed 08:00-18:00, Thu 09:00-16:00, Fri not available). The schema carries one hour range, so the envelope 08:00-18:00 is stored and the weekday rules are kept in verbatim_rules.
+  - Callback window n=1 is inferred from 'today or the next business day'.
+  - Outcome conflict: rule 6 closes a scheduled callback as not_reached / callback, but the outcome table gives no_contact for 'customer unreachable or callback scheduled'. Both rows are kept. The outcome table rule takes its exact names from the table where it names them.
+  - Outcome conflict: multi-product summary says all-declined closes as no_promise with that reason, while the outcome table says declined for all products refused. Both kept; declined applies when no note is paid as first note and the table row applies; the first-note rule is the aggregation rule.
+  - Missing: week start day is not stated (calendar.week_starts_on omitted).
+  - Missing: rounding is not stated (amounts.rounding_decimals omitted).
+  - Missing: the answer for an unclear confirmation is stated, but the answer when the customer is not in the accepted list after the second ask is covered by on_unclear only.
+  - Missing: retries_on_failure is not stated; 'if it fails twice' is kept in verbatim rules and not converted to a number.
+  - Missing: outcome when persuasion attempts are exhausted is not stated (persuasion.on_exhausted omitted).
+  - Missing: the readback template text is not stated (only the confirmation question 'Do you confirm?').
+  - Missing: the exact text of the hardship sympathy sentence is not stated; the sympathy action carries no text.
+  - Missing: the exact customer service phrasing is not stated; the scam answer text paraphrases rule 40.
+  - Missing: 'others may answer security questions' and 'others may hear account' are not stated.
+  - Missing: the exact goodbye text is not stated.
+  - Missing: the 'one date for all products' rule is not stated, so multi_product.one_date_for_all is omitted and the date for a product after its deadline is unresolved.
+  - Missing: how a capped deadline is announced for several products is not stated beyond rule 20.
+  - Missing: the state_fields for the debt statement are not stated as account field names; past-due amount and days overdue are kept in verbatim_rules.
+  - Missing: which band the 1 to 90 'business days overdue' intro refers to; the table's Days Late is used as the band basis.
+  - Verbatim rules at indices 28, 29 and 30 had stages 'confirm' and 'promise', which are not allowed stages; they are changed to 'negotiate' with their text and source_ref unchanged.
+=== VARIANT 3 RE-EXTRACTION ===
+config: LLMConfig(base_url='https://openrouter.ai/api', model='anthropic/claude-haiku-5.5', key=<hidden>)
+wrote tests/fixtures/spec_variant_3.json
+fallback=False mode=json repairs=1
+calls=5 input_tokens=56141 output_tokens=60519 seconds=248.1
+verbatim_rules=38 missing_after=4
+warnings (38):
+  - coverage: added verbatim rule (negotiate): When attempts are exhausted for a product, move to the next. [no rule for moving on after exhausted persuasion attempts]
+  - coverage: added verbatim rule (global): A question you cannot answer: say you do not have that information. [unanswerable-question rule absent from spec]
+  - coverage: added verbatim rule (opening): Address the customer as title plus last name. [title forms of address rule missing]
+  - coverage: added verbatim rule (negotiate): "I already paid": take no promise and close as paid. [no-promise instruction on paid outcome missing]
+  - coverage: added verbatim rule (negotiate): Ask for the full past-due amount per product first. Never ask "how much can you pay?". [full-amount-first rule not in verbatim_rules]
+  - coverage: added verbatim rule (negotiate): A date or amount the customer proposes is never a refusal. [customer-proposal rule not in verbatim_rules]
+  - coverage: added verbatim rule (negotiate): A flat refusal or non-answer uses one persuasion attempt per product. Each product gets: [persuasion attempt sequence not in verbatim_rules]
+  - coverage: added verbatim rule (negotiate): Never offer discount, waiver, instalment plan or any term not in this brief. [forbidden-offers prohibition not in verbatim_rules]
+  - coverage: added verbatim rule (negotiate): When all products have been discussed, read all promises back together and ask "Do you confirm?". [combined readback step not in verbatim_rules]
+  - coverage: added verbatim rule (negotiate): If the customer says twice they do not want to talk, close as no_promise / refused. [refusal-count rule not in verbatim_rules]
+  - coverage: added verbatim rule (negotiate): One date for all products: if the customer names one date for both, record it for both (capped to ea [shared-date rule not in verbatim_rules]
+  - coverage: added verbatim rule (closing): Every call ends with exactly one `close_call`, with an outcome and reason if applicable. [exactly-one-close rule not in verbatim_rules]
+  - coverage: 4 brief token(s) still not found in the spec
+  - grounding: identity_field 'phone_last_4_digits' mapped to API value 'phone_last4'
+  - grounding: close_outcome 'promised' mapped to API value 'promise'
+  - grounding: close_outcome 'declined' mapped to API value 'no_promise'
+  - grounding: close_outcome 'service_error' is not in the tool API allowed values ['promise', 'paid', 'transferred', 'no_promise', 'not_verified', 'not_reached']; left unmatched
+  - No tool API summary was provided, so account response keys, verify_identity field names, and tool field maps are not known. account_fields.product_id, amounts.full_amount_field and identity field names are placeholders named after the brief's concepts and must be checked against the API.
+  - account_fields.days_late and account_fields.products_key are not stated in the documents and were omitted.
+  - Currency and language are not stated; meta.currency was omitted and the schema default language applies.
+  - Whether the opening applies to everyone is not stated; opening.applies_to_everyone was omitted.
+  - Band roll for a calendar-day deadline that falls on a non-business day is not stated; the schema default none applies.
+  - No product type names are given in the brief for the spoken debt statement; debt_statement.product_names and state_fields were omitted. The example products 'secured loan 3456' and 'revolving credit 4567' are sample values and were not copied as policy.
+  - amounts.floor_fields and floor_default_field are not stated as fields in the documents; the 30% floor is kept in verbatim_rules. Treatment of an amount below the floor, and of an amount above the full amount, is not stated and was omitted.
+  - Rounding of amounts is not stated; amounts.rounding_decimals was omitted.
+  - Aggregation of per-product outcomes into the final close outcome is not stated; closing.aggregation was omitted.
+  - Week start, weekday semantics for 'next' and 'this', and vague period handling are not stated; calendar.week_starts_on, weekday_semantics and vague_period were omitted.
+  - Promise business-day requirement and on_non_business_day handling are not stated; promise_rules.must_be_business_day and on_non_business_day were omitted.
+  - Persuasion outcome when attempts are exhausted is not stated; persuasion.on_exhausted was omitted. Moving to the next product is kept in the brief text.
+  - Whether a changed or cancelled promise is allowed is not stated explicitly; promise_rules.allow_change_or_cancel was omitted. Changes are handled by the recheck rule.
+  - Success sentence for promise recording is not stated beyond the mandated text sentence after all promises are recorded.
+  - The question for the human request ('ask once whether you can help') is not given word for word; the intent uses 'Can I help you with this?' as a paraphrase. The scam answer is paraphrased from 'say they can verify the call by phoning River Bank's customer service number'. The exact trigger phrases 
+  - The debt statement sentence and the first sentence are paraphrased from the brief's descriptions because no exact wording is given.
+  - Identity: the wrong-answer hint and the swapped-date retry are kept in verbatim_rules because no hint value from the verify tool is documented. identity.decline.max_refusals is set to 1 for 'explain once, then close if they still decline'.
+  - Promise retries: 'if it fails twice, close' is recorded as retries_on_failure 1 (two attempts in total).
+  - Persuasion attempts: attempts 1 and 2 apply to all bands; the single band 1-30 days carries persuasion_attempts 2.
+  - Outcome table: the brief's table lists promised, declined, transferred and service_error. Additional outcome and reason pairs used by the brief's steps were added as rows so every referenced outcome exists in closing.outcome_table. The brief lists 'none' as reason for some outcomes; those rows omit 
+  - Sources: only one document was provided; no earlier rules were overridden, so no overridden-rule warnings apply.
+=== VARIANT 2 SIMPLIFIED RE-EXTRACTION ===
+config: LLMConfig(base_url='https://openrouter.ai/api', model='anthropic/claude-haiku-5.5', key=<hidden>)
+wrote tests/fixtures/spec_variant_2.json
+fallback=False mode=json repairs=2
+calls=6 input_tokens=82623 output_tokens=66575 seconds=265.2
+verbatim_rules=37 missing_after=4
+warnings (28):
+  - coverage: added verbatim rule (negotiate): "Next <weekday>" means that weekday in the following calendar week. "This <weekday>" means the one i [weekday rule only held as structured semantics, not in verbatim_rules]
+  - coverage: added verbatim rule (closing): If the customer says twice they do not want to talk, close as `no_promise` / `refused`. [spec trigger wording 'I do not want to talk' differs from source; source rule not in verbatim_rules]
+  - coverage: 4 brief token(s) still not found in the spec
+  - grounding: identity_field 'date of birth' mapped to API value 'date_of_birth'
+  - grounding: identity_field 'phone number last four digits' mapped to API value 'phone_last4'
+  - grounding: identity_field 'date of birth (asked in a different way)' mapped to API value 'date_of_birth'
+  - grounding: identity_field 'phone number last four digits (asked in a different way)' mapped to API value 'phone_last4'
+  - grounding: close_outcome 'service_error' is not in the tool API allowed values ['promise', 'paid', 'transferred', 'no_promise', 'not_verified', 'not_reached']; left unmatched
+  - grounding: close_outcome 'promised' mapped to API value 'promise'
+  - grounding: close_outcome 'declined' mapped to API value 'no_promise'
+  - grounding: close_outcome 'no_contact' mapped to API value 'not_reached'
+  - No tool API summary was provided, so account field names, identity field names and tool field maps are not verified. account_fields.product_id is a placeholder value and must be replaced with the real key from the account tool response; products_key, days_late, product_type and past-due amount field
+  - identity.questions[].field values are descriptive names taken from the brief, not verified verify_identity parameter values. Prompt wording is paraphrased because the brief gives no exact prompts.
+  - The brief does not state the language code or the currency code; meta.language and meta.currency were omitted. The amounts section mentions dollar amounts, which are kept in verbatim_rules.
+  - amounts object omitted: no account field names for the full past-due amount or floors per product type were stated. Amount rules (rules 21-24) are kept in verbatim_rules.
+  - callback_window omitted: the hours differ by weekday and cannot be expressed in one hour_start/hour_end pair. Rule 6 is kept in verbatim_rules, including inclusive and after-now conditions.
+  - Conflict: the closing table uses no_contact for unreachable customers and callback scheduled, while rules 6-9 and 42 use not_reached and no_promise. Both sets are kept in the outcome table; the specific rule outcomes are used by the agent and the table row no_contact is retained as written. Confirm 
+  - Conflict: the outcome table lists declined (all products refused) while rule 42 uses no_promise / refused for a customer who refuses to talk. Both are kept.
+  - Missing fact: deadline roll for non-business days is not stated for calendar-day deadlines; the brief's deadlines are business days, so no roll was set.
+  - Missing fact: week_starts_on is not stated and was omitted.
+  - Missing fact: text of the sympathy sentence in rule 29 is not given; the sympathy action has no text.
+  - Missing fact: one_date_for_all is not stated; a date after a product's deadline is handled by rule 20 per product.
+  - Missing fact: retries before the promise failure branch are not numerically stated beyond 'If it fails twice'; retries_on_failure was omitted.
+  - Missing fact: the promise change and cancel rules are not fully stated beyond rule 33; allow_change_or_cancel was omitted.
+  - Missing fact: the 'Do not record any notes before the transfer' rule applies to restructuring and human transfers; multi_product.on_transfer records add_no_notes only.
+  - Aggregation: the no-promise rule (first product note decides outcome) cannot be expressed in the all_notes_equal or first_note_not_equal fields with the outcomes given, so it is kept in verbatim_rules.
+  - Overridden rules: none. Only one document was provided, so no rule was overridden by a later layer.
+  - Business days and deadlines use the holiday list 2026-12-25, 2027-01-01 and 2027-07-04. Lateness is stated in business days in the 'What we do' section; the bands use Days Late ranges as written.
+=== VARIANT 3 SIMPLIFIED RE-EXTRACTION ===
+config: LLMConfig(base_url='https://openrouter.ai/api', model='anthropic/claude-haiku-5.5', key=<hidden>)
+wrote tests/fixtures/spec_variant_3.json
+fallback=False mode=auto repairs=1
+calls=3 input_tokens=49914 output_tokens=31284 seconds=117.7
+verbatim_rules=26 missing_after=4
+warnings (23):
+  - coverage: added verbatim rule (negotiate): When attempts are exhausted for a product, move to the next. [rule for moving to the next product after persuasion attempts omitted]
+  - coverage: added verbatim rule (opening): Address the customer as title plus last name. [forms of address rule for the title variable omitted]
+  - coverage: 4 brief token(s) still not found in the spec
+  - Closing table in the brief uses outcome names 'promised', 'declined' and 'service_error', which are not close_call enum values. Mapped by meaning: promised -> promise; declined -> no_promise / refused; service_error -> no_promise / service_error (per step 33). Closing table reason 'none' applied to 
+  - Currency is not stated in the brief; meta.currency omitted.
+  - No product display-name mapping from product type to spoken name ('secured loan', 'revolving credit') is stated; product_names omitted. The brief's example values 3456 and 4567 are examples, not policy.
+  - No account field holds the floor. The floor is 30% of past_due per product; the percentage cannot be expressed in floor_fields, so it is kept in verbatim_rules. Rounding of the floor is not stated; rounding_decimals omitted.
+  - Deadline roll when 30 calendar days from today falls on a weekend or holiday is not stated; roll omitted (none).
+  - The brief gives a single lateness range (1 to 30 calendar days overdue). Customers outside that range are not covered by any band.
+  - Business-day requirement for promise dates is not stated; must_be_business_day and on_non_business_day omitted. Only the 'today or later and not after the deadline' rule is given.
+  - Exact spoken wording of the opening sentence, identity question prompts, the hardship sympathy sentence, the 'not that information' answer and the goodbye text is not given word for word; the wording here is paraphrased from the brief's instructions. Goodbye text omitted.
+  - Third identity question: brief says 'the last four digits of your phone number again (in a different way)'. The meaning of 'in a different way' is not stated; field is phone_last4 again.
+  - Reading order of numeric dates is not stated; numeric_reading_order omitted. Only the day_month_swapped hint is given.
+  - Identity decline: max_refusals not stated; explain once then decline.
+  - Outcome when persuasion attempts are exhausted for a product is not stated; on_exhausted omitted. do_not_repeat_refused_offer not stated; omitted.
+  - Responses to an amount above the full amount and below the floor are not stated; below_floor and above_full omitted.
+  - Timing of intents before verification is not stated except robot and scam questions; the other intents use default after-verification application.
+  - Aggregation default (no promise, at least one refusal) is inferred from the brief's 'declined' row: default set to no_promise / refused. Multi-product outcome for paid or failed products is not stated.
+  - Callback window: 'today or the next business day' is encoded as today_or_next_business_days with n = 1.
+  - Week start, meaning of 'next' and 'this' weekday, and handling of vague periods such as 'next week' are not stated; calendar fields omitted.
+  - Hardship: sympathy action has no given sentence; no_persuasion and skip_promise used to express 'make no persuasion attempt'. Per-product close is not a call-level close; how the product-level no_promise / hardship combines with other products is not stated.
+  - Brief B notes (add_note tool) are disabled; no add_note tool or notes configuration is used.
+  - Sources: single document brief_variant_3.md, role base.
+=== VARIANT 2 FINAL RE-EXTRACTION ===
+config: LLMConfig(base_url='https://openrouter.ai/api', model='anthropic/claude-haiku-5.5', key=<hidden>)
+wrote tests/fixtures/spec_variant_2.json
+fallback=False mode=auto repairs=0
+calls=2 input_tokens=29557 output_tokens=25412 seconds=101.3
+verbatim_rules=36 missing_after=6
+warnings (32):
+  - coverage: added verbatim rule (global): Apex Trust calls business customers who are 1 to 90 business days overdue on one to four products. [call scope (eligibility, business days overdue, up to four products) not represented; bands use days_late only]
+  - coverage: added verbatim rule (negotiate): If the customer gives a vague period ("next week", "end of the month"), ask once for the exact day.  [vague-period rule missing from verbatim_rules (only structured form present)]
+  - coverage: 6 brief token(s) still not found in the spec
+  - Outcome names in the brief (promised, declined, transferred, no_contact, service_error, paid) do not all match the close_call API enum (promise, paid, transferred, no_promise, not_verified, not_reached). Mapped by meaning: promised->promise, declined->no_promise with reason refused, no_contact->not_
+  - Brief closing table and per-rule closes disagree with each other: rule 12 and 13 use not_verified, rule 6-9 use not_reached, and the closing table lists 'declined' as a close outcome. The API outcome names were used instead.
+  - Brief rule 12 says close as not_verified / failed; rule 13 says not_verified / declined. Both are kept as separate outcome rows.
+  - Product types: the brief names four products (business credit line, equipment lease, inventory loan, cash advance) but the API product types are credit_card, personal_loan and car_loan. No mapping is stated, so product_names in debt_statement and floor_fields are omitted. Products are described in v
+  - Floor amounts (15% / $5,000 / 20% / $2,000) are not held in any account field the API returns, so floor_fields and floor_default_field are omitted. Floor rules are kept verbatim. Percentages apply to full past-due amount.
+  - Account response has no field for the floor; the full amount is taken from past_due. Below-floor behaviour is not stated and is omitted.
+  - Currency is not stated as a code; the brief uses dollar signs. Currency is omitted.
+  - Calendar week_starts_on is not stated and is omitted.
+  - Band boundaries: brief intro says customers are 1 to 90 business days overdue, while the band table uses Days Late. Days late 0 and above 90 are not covered by any band.
+  - Band deadlines use business_days_after_today; no roll rule is needed or stated.
+  - Persuasion: no on_exhausted outcome is stated; brief only says move to the next product. Omitted.
+  - Rule 17 refers to rule 19 for days after deadline, but rule 19 is the weekday rule; rule 20 is the deadline rule. Rule 20 was applied.
+  - Identity question prompts are not given in the brief; the prompt wording is a neutral placeholder and must be checked.
+  - Numeric reading order for date of birth is not stated; omitted. Brief does not explain hint day_month_swapped or whether it counts as wrong; no hints entry was created.
+  - Declining explanation text is paraphrased from rule 13 ('the questions protect their account').
+  - Mobile app / branch failure sentence is paraphrased from rule 12 and kept in verbatim rules, not as a say action.
+  - Sympathy sentence is not given word for word; sympathy action is used without text.
+  - Opening first sentence is a paraphrase of rule 1; exact wording is not given.
+  - Callback window: the brief gives different hours per weekday (Mon-Wed 8-18, Thu 9-16, Fri none). The schema has one hour range, so 08:00-18:00 inclusive is recorded and the per-day table is in verbatim rules. Thursday and Friday restrictions must be enforced from verbatim rules.
+  - Human transfer: the brief says ask once whether you can help; the case where the customer accepts help is not stated. The ask_once action has no decline branch.
+  - Multi-product one_date_for_all and capped deadline announcement are not stated; omitted. Brief rule 20 gives the say-latest-date wording but no capped read-back wording.
+  - Rule 36-37 notes: 'keep_recorded_promises' and 'drop_unrecorded_promises' on transfer are not stated; omitted.
+  - all_notes_equal and first_note_not_equal aggregation: brief gives only the first-note rule; the mapping to all_notes_equal (paid) and first_note_not_equal (no_promise) is an interpretation.
+  - Closing goodbye text is not stated; only that goodbye is required.
+  - Promise failure outcome (on_failure) is not stated beyond the add_note service_error rule; omitted.
+  - Retries: 'If it fails twice, call add_note with service_error' was read as one retry (retries_on_failure 1).
+  - Rule 40 scam answer is also placed in opening.scam_question_answer; rule 41 unknown question is an intent action.
+  - Intent for 'does not want to talk' trigger phrase is paraphrased from rule 42; hardship triggers are paraphrased from rule 29.
+  - Brief description 'Brief B' in add_note API is a tool description, not a rule in this brief; no override applied.

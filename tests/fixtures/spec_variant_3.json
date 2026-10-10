@@ -1,0 +1,790 @@
+{
+  "schema_version": "1",
+  "meta": {
+    "bank_name": "River Bank",
+    "agent_identity": "River Bank's digital assistant",
+    "language": "en",
+    "sources": [
+      {
+        "path": "brief_variant_3.md",
+        "order": 1,
+        "role": "base",
+        "summary": "Brief Variant 3: River Bank mid-range two-product collections call; identity, debt statement, promises, closing outcomes."
+      }
+    ]
+  },
+  "call_variables": {
+    "customer_id": "customer_id",
+    "now": "now",
+    "first_name": "first_name",
+    "last_name": "last_name",
+    "title": "title"
+  },
+  "account_fields": {
+    "product_id": "product_id",
+    "product_type": "type",
+    "days_late": "days_late",
+    "products_key": "products"
+  },
+  "opening": {
+    "first_sentence": {
+      "template": "This is River Bank's digital assistant calling. This call is recorded.",
+      "must_include": [
+        "River Bank",
+        "digital assistant",
+        "recorded"
+      ]
+    },
+    "forbidden_before_verification": [
+      "collections",
+      "debt",
+      "payment",
+      "products"
+    ],
+    "applies_to_everyone": true,
+    "confirmation_question": "Am I speaking with {title} {last_name}?",
+    "confirmation_accepted": [
+      "yes",
+      "that's me",
+      "speaking",
+      "the customer's own name"
+    ],
+    "confirmation_not_accepted": [
+      "any other answer"
+    ],
+    "max_confirmation_asks": 2,
+    "on_unclear": {
+      "outcome": "not_reached",
+      "reason": "unclear"
+    },
+    "ai_question_answer": "I am River Bank's digital assistant. Continue the call.",
+    "scam_question_answer": "You can verify this call by phoning River Bank's customer service number. Then continue."
+  },
+  "third_party": {
+    "say_nothing_beyond_opening": true,
+    "ask_when_reachable": true,
+    "callback_window": {
+      "days": {
+        "kind": "today_or_next_business_days",
+        "n": 1
+      },
+      "hour_start": "10:00",
+      "hour_end": "18:00",
+      "inclusive": true,
+      "must_be_after_now": true
+    },
+    "reasks_when_outside": 1,
+    "on_callback_scheduled": {
+      "outcome": "not_reached",
+      "reason": "callback"
+    },
+    "on_no_valid_time": {
+      "outcome": "not_reached",
+      "reason": "no_callback"
+    },
+    "on_not_customers_number": {
+      "outcome": "not_reached",
+      "reason": "wrong_number"
+    },
+    "on_customer_deceased": {
+      "sentence": "I am sorry for your loss.",
+      "ask_nothing_else": true,
+      "outcome": {
+        "outcome": "not_reached",
+        "reason": "deceased"
+      }
+    }
+  },
+  "identity": {
+    "questions": [
+      {
+        "field": "phone_last4",
+        "prompt": "Please tell me the last four digits of your phone number.",
+        "answer_format": {
+          "kind": "digits",
+          "digits": 4
+        }
+      },
+      {
+        "field": "date_of_birth",
+        "prompt": "Please tell me your date of birth.",
+        "answer_format": {
+          "kind": "date",
+          "output_format": "YYYY-MM-DD",
+          "notes": "Callers say the date in words; the agent converts it to YYYY-MM-DD. A day and month swapped answer triggers the day_month_swapped hint."
+        }
+      },
+      {
+        "field": "phone_last4",
+        "prompt": "Please tell me the last four digits of your phone number again, in a different way.",
+        "answer_format": {
+          "kind": "digits",
+          "digits": 4,
+          "notes": "Same field as question 1, asked in a different way."
+        }
+      }
+    ],
+    "max_wrong_total": 3,
+    "wrong_may_be_reasked": true,
+    "one_at_a_time": true,
+    "hints": [
+      {
+        "value": "day_month_swapped",
+        "instruction": "Ask the customer to say the month as a word. This retry does not count as wrong.",
+        "counts_as_wrong": false
+      }
+    ],
+    "on_failure": {
+      "outcome": {
+        "outcome": "not_verified",
+        "reason": "failed"
+      },
+      "disclose_debt": false
+    },
+    "decline": {
+      "explain_once": "Explain once that the questions protect the customer's account.",
+      "outcome": {
+        "outcome": "not_verified",
+        "reason": "declined"
+      }
+    }
+  },
+  "debt_statement": {
+    "intro": "Say that you are calling from River Bank about overdue payments.",
+    "state_fields": [
+      "past_due",
+      "days_late"
+    ]
+  },
+  "calendar": {
+    "weekend_days": [
+      "saturday",
+      "sunday"
+    ],
+    "holidays": [
+      "2026-12-25",
+      "2027-01-01"
+    ]
+  },
+  "bands": [
+    {
+      "name": "1 to 30 days late",
+      "days_late_min": 1,
+      "days_late_max": 30,
+      "deadline": {
+        "kind": "calendar_days_after_today",
+        "n": 30
+      },
+      "persuasion_attempts": 2
+    }
+  ],
+  "amounts": {
+    "full_amount_field": "past_due",
+    "ask_full_first": true,
+    "accept_between_floor_and_full": true,
+    "forbidden_questions": [
+      "how much can you pay?"
+    ],
+    "too_much": {
+      "offer_floor_times": 1,
+      "refusal_is_flat_refusal": true,
+      "say_rest_stays_overdue": true
+    }
+  },
+  "promise_rules": {
+    "earliest": "today",
+    "latest": "deadline",
+    "first_ask": "Can you promise on both products today?",
+    "on_after_deadline": "offer_deadline",
+    "readback": {
+      "confirmation_question": "Do you confirm?",
+      "template": "Read all promises back together.",
+      "recheck_on_change": true
+    },
+    "one_promise_per_product": true,
+    "say_recorded_only_after_ok": true,
+    "success_sentence": "You will receive a text message confirming these promises.",
+    "retries_on_failure": 1,
+    "on_failure": {
+      "outcome": {
+        "outcome": "no_promise",
+        "reason": "service_error"
+      }
+    },
+    "refusing_deadline_is_flat_refusal": true,
+    "forbidden_offers": [
+      "discount",
+      "waiver",
+      "instalment plan"
+    ]
+  },
+  "persuasion": {
+    "attempts": [
+      {
+        "index": 1,
+        "date_rule": "deadline",
+        "amount_rule": "full",
+        "note": "Propose the deadline with the full amount."
+      },
+      {
+        "index": 2,
+        "date_rule": "deadline",
+        "amount_rule": "floor",
+        "note": "Propose the deadline with the floor amount."
+      }
+    ],
+    "flat_refusal_definition": "A flat refusal or non-answer.",
+    "customer_proposal_is_never_refusal": true
+  },
+  "intents": [
+    {
+      "name": "robot_question",
+      "triggers": [
+        "Are you a robot?",
+        "Is this a machine?"
+      ],
+      "applies_before_verification": true,
+      "applies_after_verification": true,
+      "precedence": 10,
+      "actions": [
+        {
+          "type": "say",
+          "text": "I am River Bank's digital assistant."
+        },
+        {
+          "type": "continue"
+        }
+      ]
+    },
+    {
+      "name": "scam_question",
+      "triggers": [
+        "Is this a scam?"
+      ],
+      "applies_before_verification": true,
+      "applies_after_verification": true,
+      "precedence": 20,
+      "actions": [
+        {
+          "type": "say",
+          "text": "You can verify this call by phoning River Bank's customer service number."
+        },
+        {
+          "type": "continue"
+        }
+      ]
+    },
+    {
+      "name": "already_paid",
+      "triggers": [
+        "I already paid",
+        "I have already paid this"
+      ],
+      "precedence": 30,
+      "actions": [
+        {
+          "type": "close",
+          "outcome": "paid"
+        }
+      ]
+    },
+    {
+      "name": "debt_not_mine",
+      "triggers": [
+        "This debt is not mine",
+        "This is not my debt"
+      ],
+      "precedence": 40,
+      "actions": [
+        {
+          "type": "close",
+          "outcome": "no_promise",
+          "reason": "dispute"
+        }
+      ]
+    },
+    {
+      "name": "hardship",
+      "triggers": [
+        "I am ill",
+        "I am sick",
+        "I lost my job",
+        "I have lost my job"
+      ],
+      "precedence": 50,
+      "actions": [
+        {
+          "type": "sympathy"
+        },
+        {
+          "type": "no_persuasion"
+        },
+        {
+          "type": "skip_promise"
+        }
+      ]
+    },
+    {
+      "name": "restructuring_request",
+      "triggers": [
+        "I need restructuring",
+        "I want lower instalments",
+        "Can I pay smaller instalments?"
+      ],
+      "precedence": 60,
+      "actions": [
+        {
+          "type": "transfer",
+          "queue": "restructuring"
+        },
+        {
+          "type": "close",
+          "outcome": "transferred",
+          "reason": "restructuring"
+        }
+      ]
+    },
+    {
+      "name": "asks_for_human",
+      "triggers": [
+        "I want to speak to a person",
+        "I want a human",
+        "Let me talk to someone"
+      ],
+      "occurrences_before_action": 2,
+      "precedence": 70,
+      "actions": [
+        {
+          "type": "transfer",
+          "queue": "general"
+        },
+        {
+          "type": "close",
+          "outcome": "transferred",
+          "reason": "human"
+        }
+      ]
+    },
+    {
+      "name": "does_not_want_to_talk",
+      "triggers": [
+        "I do not want to talk",
+        "I don't want to talk",
+        "Stop, I do not want to talk"
+      ],
+      "occurrences_before_action": 2,
+      "precedence": 80,
+      "actions": [
+        {
+          "type": "close",
+          "outcome": "no_promise",
+          "reason": "refused"
+        }
+      ]
+    }
+  ],
+  "closing": {
+    "outcome_table": [
+      {
+        "outcome": "promise",
+        "when": "At least one promise was recorded.",
+        "source_refs": [
+          "brief_variant_3.md Closing 42 (promised)"
+        ]
+      },
+      {
+        "outcome": "paid",
+        "when": "The customer says they already paid; no promise is taken.",
+        "source_refs": [
+          "brief_variant_3.md Other things 35"
+        ]
+      },
+      {
+        "outcome": "transferred",
+        "reason": "restructuring",
+        "when": "Customer asks for restructuring or lower instalments and the call is transferred.",
+        "source_refs": [
+          "brief_variant_3.md Other things 37",
+          "brief_variant_3.md Closing 42"
+        ]
+      },
+      {
+        "outcome": "transferred",
+        "reason": "human",
+        "when": "Customer insists on a human and the call is transferred to the general queue.",
+        "source_refs": [
+          "brief_variant_3.md Other things 38",
+          "brief_variant_3.md Closing 42"
+        ]
+      },
+      {
+        "outcome": "no_promise",
+        "reason": "refused",
+        "when": "No promise; customer said twice they do not want to talk, or a product was actively refused (declined).",
+        "source_refs": [
+          "brief_variant_3.md Other things 41",
+          "brief_variant_3.md Closing 42 (declined)"
+        ]
+      },
+      {
+        "outcome": "no_promise",
+        "reason": "dispute",
+        "when": "Customer says the debt is not theirs.",
+        "source_refs": [
+          "brief_variant_3.md Other things 36"
+        ]
+      },
+      {
+        "outcome": "no_promise",
+        "reason": "hardship",
+        "when": "Customer mentions illness or job loss for a product; no persuasion attempt.",
+        "source_refs": [
+          "brief_variant_3.md Getting the promises 28"
+        ]
+      },
+      {
+        "outcome": "no_promise",
+        "reason": "service_error",
+        "when": "create_promise failed twice so nothing could be recorded.",
+        "source_refs": [
+          "brief_variant_3.md Confirming 33",
+          "brief_variant_3.md Closing 42 (service_error)"
+        ]
+      },
+      {
+        "outcome": "not_verified",
+        "reason": "failed",
+        "when": "Three wrong answers in total in the identity check.",
+        "source_refs": [
+          "brief_variant_3.md Identity 13"
+        ]
+      },
+      {
+        "outcome": "not_verified",
+        "reason": "declined",
+        "when": "Customer still declines to answer the security questions after one explanation.",
+        "source_refs": [
+          "brief_variant_3.md Identity 14"
+        ]
+      },
+      {
+        "outcome": "not_reached",
+        "reason": "unclear",
+        "when": "Customer confirmation of identity still unclear after one more ask.",
+        "source_refs": [
+          "brief_variant_3.md Opening 3"
+        ]
+      },
+      {
+        "outcome": "not_reached",
+        "reason": "callback",
+        "when": "Callback scheduled with a third party.",
+        "source_refs": [
+          "brief_variant_3.md Someone else answers 6"
+        ]
+      },
+      {
+        "outcome": "not_reached",
+        "reason": "no_callback",
+        "when": "Third party offers no valid callback time.",
+        "source_refs": [
+          "brief_variant_3.md Someone else answers 7"
+        ]
+      },
+      {
+        "outcome": "not_reached",
+        "reason": "wrong_number",
+        "when": "Third party says the number does not belong to the customer.",
+        "source_refs": [
+          "brief_variant_3.md Someone else answers 8"
+        ]
+      },
+      {
+        "outcome": "not_reached",
+        "reason": "deceased",
+        "when": "Third party says the customer has died.",
+        "source_refs": [
+          "brief_variant_3.md Someone else answers 9"
+        ]
+      }
+    ],
+    "exactly_one_close": true,
+    "close_tool_last": true,
+    "goodbye_before_close": {
+      "required": true
+    },
+    "aggregation": {
+      "precedence": [
+        "transfer",
+        "any_promise"
+      ],
+      "transfer_outcome": "transferred",
+      "promise_outcome": "promise",
+      "default": {
+        "outcome": "no_promise",
+        "reason": "refused"
+      }
+    }
+  },
+  "multi_product": {
+    "enabled": true,
+    "max_products": 2,
+    "order": "account_order",
+    "ask_all_today_first": true,
+    "per_product_attempts": true,
+    "one_date_for_all": "cap_each_to_own_deadline",
+    "combined_readback": true
+  },
+  "tools": {
+    "verify_identity": {
+      "purpose": "Check one security answer.",
+      "field_map": {
+        "field": "field",
+        "answer": "answer",
+        "wrong_answers_left": "wrong_answers_left",
+        "all_verified": "all_verified"
+      },
+      "allowed_values": {
+        "field": [
+          "date_of_birth",
+          "phone_last4"
+        ],
+        "hint": [
+          "day_month_swapped"
+        ]
+      }
+    },
+    "get_account": {
+      "purpose": "Return the late products after both questions pass.",
+      "field_map": {
+        "products_key": "products",
+        "product_id": "products.product_id",
+        "product_type": "products.type",
+        "days_late": "products.days_late",
+        "past_due": "products.past_due"
+      }
+    },
+    "create_promise": {
+      "purpose": "Record one payment promise per product.",
+      "field_map": {
+        "product_id": "product_id",
+        "amount": "amount",
+        "date": "date"
+      }
+    },
+    "schedule_callback": {
+      "purpose": "Book a callback with a valid date and time.",
+      "field_map": {
+        "date": "date",
+        "time": "time"
+      }
+    },
+    "transfer_to_agent": {
+      "purpose": "Hand the call to a person.",
+      "allowed_values": {
+        "queue": [
+          "restructuring",
+          "general",
+          "support"
+        ]
+      }
+    },
+    "close_call": {
+      "purpose": "End the call. Always the last tool call.",
+      "allowed_values": {
+        "outcome": [
+          "promise",
+          "paid",
+          "transferred",
+          "no_promise",
+          "not_verified",
+          "not_reached"
+        ]
+      },
+      "notes": "Reason is required for every outcome except promise and paid."
+    }
+  },
+  "mandated_sentences": [
+    {
+      "when": "Opening, first sentence (paraphrase of the brief's required content: digital assistant, River Bank, call recorded)",
+      "text": "This is River Bank's digital assistant calling. This call is recorded."
+    },
+    {
+      "when": "Opening identity check",
+      "text": "Am I speaking with {title} {last_name}?"
+    },
+    {
+      "when": "Someone other than the customer says the customer has died",
+      "text": "I am sorry for your loss."
+    },
+    {
+      "when": "Asking for confirmation of the promises after they are read back",
+      "text": "Do you confirm?"
+    },
+    {
+      "when": "Asking first whether all products can be promised today",
+      "text": "Can you promise on both products today?"
+    },
+    {
+      "when": "After all promises are recorded (create_promise returned ok: true)",
+      "text": "You will receive a text message confirming these promises."
+    }
+  ],
+  "verbatim_rules": [
+    {
+      "stage": "opening",
+      "source_ref": "brief_variant_3.md Opening 1",
+      "text": "First sentence: say you are a digital assistant calling from River Bank, and that the call is recorded. Do not say 'collections', 'debt', 'payment' or the products before identity is verified."
+    },
+    {
+      "stage": "opening",
+      "source_ref": "brief_variant_3.md Opening 4",
+      "text": "If the customer asks whether you are a robot, say that you are River Bank's digital assistant and continue."
+    },
+    {
+      "stage": "third_party",
+      "source_ref": "brief_variant_3.md Someone else answers 5",
+      "text": "Do not say why you are calling. Say nothing beyond the opening sentence. Ask when the customer can be reached."
+    },
+    {
+      "stage": "third_party",
+      "source_ref": "brief_variant_3.md Someone else answers 6",
+      "text": "A callback is for today or the next business day (Monday–Friday only, no Saturdays), from 10:00 to 18:00, both included, and later than now. Call schedule_callback with the date and the time, then close as not_reached / callback."
+    },
+    {
+      "stage": "third_party",
+      "source_ref": "brief_variant_3.md Someone else answers 7",
+      "text": "If the person offers a day or a time outside that window, ask once for another time. If that is also outside it, do not schedule. Close as not_reached / no_callback."
+    },
+    {
+      "stage": "identity",
+      "source_ref": "brief_variant_3.md Identity 10",
+      "text": "Ask three security questions, one at a time: first the last four digits of your phone number, then your date of birth, then the last four digits of your phone number again (in a different way). Call verify_identity with each answer."
+    },
+    {
+      "stage": "identity",
+      "source_ref": "brief_variant_3.md Identity 12",
+      "text": "A date answer with day and month swapped: ask the customer to say the month as a word. That retry does not count as wrong."
+    },
+    {
+      "stage": "identity",
+      "source_ref": "brief_variant_3.md Identity 13",
+      "text": "After three wrong answers, do not state the debts. Tell the customer to use the mobile app or contact a branch. Close as not_verified / failed."
+    },
+    {
+      "stage": "identity",
+      "source_ref": "brief_variant_3.md Identity 14",
+      "text": "If the customer does not want to answer, explain once that the questions protect their account. If they still decline, close as not_verified / declined."
+    },
+    {
+      "stage": "debt",
+      "source_ref": "brief_variant_3.md Stating the debts 15",
+      "text": "After all three questions pass, call get_account."
+    },
+    {
+      "stage": "debt",
+      "source_ref": "brief_variant_3.md Stating the debts 16",
+      "text": "Say that you are calling from River Bank about overdue payments. Name each product (the brief's examples are 'secured loan 3456' and 'revolving credit 4567'; the mapping from product type to spoken name is not stated). State each past-due amount and calendar days overdue, in the order get_account returned them."
+    },
+    {
+      "stage": "negotiate",
+      "source_ref": "brief_variant_3.md Amounts 21",
+      "text": "The floor is 30% of the full past-due amount per product. No account field holds the floor; the agent computes it from past_due."
+    },
+    {
+      "stage": "negotiate",
+      "source_ref": "brief_variant_3.md Dates 19",
+      "text": "If the customer names a date after the deadline, say the latest date you can record is the deadline and offer it. If they refuse, treat it as a refusal for that product."
+    },
+    {
+      "stage": "negotiate",
+      "source_ref": "brief_variant_3.md Other things 36",
+      "text": "'This debt is not mine': do not argue. Close as no_promise / dispute."
+    },
+    {
+      "stage": "negotiate",
+      "source_ref": "brief_variant_3.md Getting the promises 28",
+      "text": "If the customer mentions illness or job loss, say one short sentence of sympathy and make no persuasion attempt. Close that product as no_promise / hardship. If the customer later names a date or amount themselves, record a promise instead."
+    },
+    {
+      "stage": "negotiate",
+      "source_ref": "brief_variant_3.md Other things 40",
+      "text": "A question you cannot answer: say you do not have that information."
+    },
+    {
+      "stage": "negotiate",
+      "source_ref": "brief_variant_3.md Other things 38",
+      "text": "A request for a human: ask once whether you can help. If they insist, call transfer_to_agent with queue general. Close as transferred / human."
+    },
+    {
+      "stage": "negotiate",
+      "source_ref": "brief_variant_3.md Confirming 32",
+      "text": "If the customer changes a date or amount when confirming, check it against the Dates and Amounts rules and read it back again."
+    },
+    {
+      "stage": "negotiate",
+      "source_ref": "brief_variant_3.md Confirming 33",
+      "text": "Say the promise is recorded only after create_promise returns ok: true. If it fails twice, close as no_promise / service_error."
+    },
+    {
+      "stage": "negotiate",
+      "source_ref": "brief_variant_3.md Getting the promises 24",
+      "text": "Ask first whether the customer can promise on both products today. If not, go through products one at a time, in account order."
+    },
+    {
+      "stage": "negotiate",
+      "source_ref": "brief_variant_3.md Getting the promises 29",
+      "text": "Never offer discount, waiver, instalment plan or any term not in this brief."
+    },
+    {
+      "stage": "closing",
+      "source_ref": "brief_variant_3.md Closing 43",
+      "text": "Thank the customer and say goodbye before close_call."
+    },
+    {
+      "stage": "global",
+      "source_ref": "brief_variant_3.md Other things 39",
+      "text": "'Is this a scam?': say they can verify the call by phoning River Bank's customer service number, and continue."
+    },
+    {
+      "stage": "global",
+      "source_ref": "brief_variant_3.md Multi-product rules summary",
+      "text": "Promises are recorded per product only; no notes are recorded (notes are not enabled in this brief)."
+    },
+    {
+      "stage": "negotiate",
+      "text": "When attempts are exhausted for a product, move to the next.",
+      "source_ref": "coverage"
+    },
+    {
+      "stage": "opening",
+      "text": "Address the customer as title plus last name.",
+      "source_ref": "coverage"
+    }
+  ],
+  "warnings": [
+    "Closing table in the brief uses outcome names 'promised', 'declined' and 'service_error', which are not close_call enum values. Mapped by meaning: promised -> promise; declined -> no_promise / refused; service_error -> no_promise / service_error (per step 33). Closing table reason 'none' applied to promise.",
+    "Currency is not stated in the brief; meta.currency omitted.",
+    "No product display-name mapping from product type to spoken name ('secured loan', 'revolving credit') is stated; product_names omitted. The brief's example values 3456 and 4567 are examples, not policy.",
+    "No account field holds the floor. The floor is 30% of past_due per product; the percentage cannot be expressed in floor_fields, so it is kept in verbatim_rules. Rounding of the floor is not stated; rounding_decimals omitted.",
+    "Deadline roll when 30 calendar days from today falls on a weekend or holiday is not stated; roll omitted (none).",
+    "The brief gives a single lateness range (1 to 30 calendar days overdue). Customers outside that range are not covered by any band.",
+    "Business-day requirement for promise dates is not stated; must_be_business_day and on_non_business_day omitted. Only the 'today or later and not after the deadline' rule is given.",
+    "Exact spoken wording of the opening sentence, identity question prompts, the hardship sympathy sentence, the 'not that information' answer and the goodbye text is not given word for word; the wording here is paraphrased from the brief's instructions. Goodbye text omitted.",
+    "Third identity question: brief says 'the last four digits of your phone number again (in a different way)'. The meaning of 'in a different way' is not stated; field is phone_last4 again.",
+    "Reading order of numeric dates is not stated; numeric_reading_order omitted. Only the day_month_swapped hint is given.",
+    "Identity decline: max_refusals not stated; explain once then decline.",
+    "Outcome when persuasion attempts are exhausted for a product is not stated; on_exhausted omitted. do_not_repeat_refused_offer not stated; omitted.",
+    "Responses to an amount above the full amount and below the floor are not stated; below_floor and above_full omitted.",
+    "Timing of intents before verification is not stated except robot and scam questions; the other intents use default after-verification application.",
+    "Aggregation default (no promise, at least one refusal) is inferred from the brief's 'declined' row: default set to no_promise / refused. Multi-product outcome for paid or failed products is not stated.",
+    "Callback window: 'today or the next business day' is encoded as today_or_next_business_days with n = 1.",
+    "Week start, meaning of 'next' and 'this' weekday, and handling of vague periods such as 'next week' are not stated; calendar fields omitted.",
+    "Hardship: sympathy action has no given sentence; no_persuasion and skip_promise used to express 'make no persuasion attempt'. Per-product close is not a call-level close; how the product-level no_promise / hardship combines with other products is not stated.",
+    "Brief B notes (add_note tool) are disabled; no add_note tool or notes configuration is used.",
+    "Sources: single document brief_variant_3.md, role base.",
+    "coverage: added verbatim rule (negotiate): When attempts are exhausted for a product, move to the next. [rule for moving to the next product after persuasion attempts omitted]",
+    "coverage: added verbatim rule (opening): Address the customer as title plus last name. [forms of address rule for the title variable omitted]",
+    "coverage: 4 brief token(s) still not found in the spec"
+  ]
+}
