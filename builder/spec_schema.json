@@ -600,6 +600,10 @@
             }
           }
         },
+        "close_tool": {
+          "type": "string",
+          "description": "Name of the close operation when the tools mapping does not name it."
+        },
         "close_tool_last": {"type": "boolean"},
         "exactly_one_close": {"type": "boolean"},
         "goodbye_before_close": {

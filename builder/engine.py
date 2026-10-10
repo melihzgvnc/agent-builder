@@ -190,6 +190,19 @@ def add_business_days(start: datetime.date, n: int, cal: dict) -> datetime.date:
     return x
 
 
+def business_days_through(start: datetime.date, last: datetime.date, cal: dict) -> list[datetime.date]:
+    """Every business day from start to last, both included, in order (capped by DAY_CAP)."""
+    out = []
+    x = start
+    for _ in range(DAY_CAP):
+        if x > last:
+            break
+        if is_business_day(x, cal):
+            out.append(x)
+        x = x + datetime.timedelta(days=1)
+    return out
+
+
 def week_start_date(d: datetime.date, cal: dict) -> datetime.date:
     return d - datetime.timedelta(days=(d.weekday() - cal["week_start"]) % 7)
 
@@ -798,6 +811,8 @@ def output_names(spec: dict, io: dict) -> list[str]:
     for i in range(1, _slot_count(spec) + 1):
         for f in _slot_fields(spec):
             names.append("p" + str(i) + "_" + f)
+    names.append("business_days")
+    names.append("callback_dates")
     names.append("date_facts")
     names.append("product_facts")
     return [p + n for n in names]
@@ -947,6 +962,17 @@ def compute_facts(vars_in: dict, spec: dict, io: dict) -> dict[str, object]:
     out[p + "product_count"] = len(products)
     blocks = []
     slots = _slot_count(spec)
+    latest = None
+    if today is not None:
+        for prod in products[:slots]:
+            b = band_for(_days_late(prod, spec), spec)
+            dl = deadline_for(b, today, cal) if b is not None else None
+            if dl is not None and (latest is None or dl > latest):
+                latest = dl
+        if not callback_window_gaps(spec):
+            out[p + "callback_dates"] = ",".join(_iso(d) for d in allowed_callback_dates(today, spec, cal))
+    if today is not None and latest is not None:
+        out[p + "business_days"] = ",".join(_iso(d) for d in business_days_through(today, latest, cal))
     for i, prod in enumerate(products[:slots], start=1):
         s = p + "p" + str(i) + "_"
         band = band_for(_days_late(prod, spec), spec)

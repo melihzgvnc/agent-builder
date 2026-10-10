@@ -381,6 +381,7 @@ class Aggregation:
 @dataclass
 class Closing:
     outcome_table: list[OutcomeRow]
+    close_tool: str | None = None
     close_tool_last: bool | None = None
     exactly_one_close: bool | None = None
     goodbye_before_close: Goodbye | None = None

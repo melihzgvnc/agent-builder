@@ -16,8 +16,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from builder import health, readback
+from builder.compiler import compile_workflow
+from builder.freya_extra import get_workflow
 from builder.lint import lint
-from builder.spec import validate_spec
+from builder.spec import load_spec, validate_spec
 from builder.trace import Trace
 
 STAGE_ORDER: tuple[str, ...] = (
@@ -29,8 +32,8 @@ STAGE_ORDER: tuple[str, ...] = (
     "dry_run",
     "save",
     "read_back",
-    "smoke_test",
     "export",
+    "smoke_test",
     "online_test",
 )
 
@@ -69,6 +72,9 @@ class BuildContext:
     cases: Path | None
     run_dir: Path
     trace: Trace
+    spec_path: Path | None = None
+    client: Any = None
+    spec_obj: Any = None
     brief_texts: list[str] = field(default_factory=list)
     openapi_doc: dict[str, Any] | None = None
     spec: dict[str, Any] | None = None
@@ -100,8 +106,31 @@ def stage_load_inputs(ctx: BuildContext) -> str:
     return f"read {len(ctx.brief_texts)} brief(s); openapi tools={tools}"
 
 
+def _freya(ctx: BuildContext) -> Any:
+    """The Freya client: the injected one (tests) or the freya module next to build.py."""
+    if ctx.client is not None:
+        return ctx.client
+    import freya
+
+    return freya
+
+
+def _saved(ctx: BuildContext) -> dict[str, Any]:
+    info = ctx.results.get("saved")
+    if not isinstance(info, dict) or not info.get("workflow_id"):
+        raise StageSkipped("no saved workflow")
+    return info
+
+
 def stage_extract_spec(ctx: BuildContext) -> str:
-    raise NotImplementedStage()
+    """Dev option: read a ready PolicySpec from --spec. Without it extraction is not available."""
+    if ctx.spec_path is None:
+        raise NotImplementedStage()
+    data = json.loads(Path(ctx.spec_path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("spec file is not a JSON object")
+    ctx.spec = data
+    return f"spec read from {ctx.spec_path} (dev option, extractor not run)"
 
 
 def stage_validate_spec(ctx: BuildContext) -> str:
@@ -120,7 +149,24 @@ def stage_validate_spec(ctx: BuildContext) -> str:
 
 
 def stage_compile_workflow(ctx: BuildContext) -> str:
-    raise NotImplementedStage()
+    """Compile the spec into a workflow; write workflow.json and compile_report.json."""
+    assert ctx.spec is not None and ctx.openapi_doc is not None
+    ctx.spec_obj = load_spec(ctx.spec)
+    workflow, report = compile_workflow(ctx.spec_obj, ctx.openapi_doc)
+    ctx.workflow = workflow
+    (ctx.run_dir / "workflow.json").write_text(
+        json.dumps(workflow, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    (ctx.run_dir / "compile_report.json").write_text(
+        json.dumps(report.to_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    for w in report.warnings:
+        ctx.trace.warn(f"compile: {w}")
+    for g in report.gaps:
+        ctx.trace.warn(f"compile gap: {g}")
+    nodes = workflow.get("nodes")
+    count = len(nodes) if isinstance(nodes, (dict, list)) else 0
+    return f"{count} nodes, {len(report.warnings)} warning(s), {len(report.gaps)} gap(s)"
 
 
 def stage_lint(ctx: BuildContext) -> str:
@@ -139,23 +185,62 @@ def stage_lint(ctx: BuildContext) -> str:
 
 
 def stage_dry_run(ctx: BuildContext) -> str:
-    raise NotImplementedStage()
+    """Ask the platform to validate the workflow without creating it."""
+    result = _freya(ctx).validate_workflow(ctx.slot, ctx.workflow)
+    keys = sorted(result) if isinstance(result, dict) else type(result).__name__
+    return f"platform validation answered: {keys}"
 
 
 def stage_save(ctx: BuildContext) -> str:
-    raise NotImplementedStage()
+    """Create or update the workflow in this slot and publish it."""
+    info = _freya(ctx).save_workflow(
+        ctx.slot, ctx.workflow, state_file=str(ctx.root / ".freya-agents.json")
+    )
+    ctx.results["saved"] = info
+    ctx.trace.log_artifact(
+        "saved", str(info["workflow_id"]), str(info.get("agent_id")), version=info.get("version")
+    )
+    return f"workflow_id={info['workflow_id']}"
 
 
 def stage_read_back(ctx: BuildContext) -> str:
-    raise NotImplementedStage()
+    """Read the stored workflow and report what the platform changed."""
+    info = _saved(ctx)
+    stored = get_workflow(str(info["workflow_id"]), client=_freya(ctx))
+    stored_wf = stored.get("workflow", stored) if isinstance(stored, dict) else {}
+    diffs = readback.diff_workflows(ctx.workflow or {}, stored_wf if isinstance(stored_wf, dict) else {})
+    for line in diffs:
+        ctx.trace.warn(f"read_back: {line}")
+    return f"{len(diffs)} difference(s)"
 
 
 def stage_smoke_test(ctx: BuildContext) -> str:
-    raise NotImplementedStage()
+    """One chat turn against the saved workflow; an unhealthy model backend is not a build failure."""
+    info = _saved(ctx)
+    variables: dict[str, str] = {}
+    cv = getattr(ctx.spec_obj, "call_variables", None)
+    if cv is not None:
+        names = [cv.customer_id, cv.first_name, cv.last_name, cv.title, *[e.name for e in cv.extra]]
+        for name in names:
+            if name:
+                variables[name] = "smoke-test"
+        variables[cv.now] = datetime.now().isoformat(timespec="minutes")
+    res = health.probe_chat(str(info["workflow_id"]), variables, client=_freya(ctx))
+    if not res["ok"]:
+        ctx.trace.warn(f"model backend unhealthy: {res['error']}")
+        ctx.trace.log_test("smoke", ctx.slot, "model backend unhealthy, skipped")
+        raise StageSkipped("model backend unhealthy")
+    ctx.trace.log_test("smoke", ctx.slot, "ok", details=f"{res['seconds']:.1f}s")
+    return f"chat answered in {res['seconds']:.1f}s"
 
 
 def stage_export(ctx: BuildContext) -> str:
-    raise NotImplementedStage()
+    """Write the workflow as stored on the platform into the run folder."""
+    info = _saved(ctx)
+    path = _freya(ctx).export_workflow(
+        str(info["workflow_id"]), str(ctx.run_dir / f"{ctx.slot}.workflow.json")
+    )
+    return f"exported to {path}"
 
 
 def stage_online_test(ctx: BuildContext) -> str:
@@ -179,8 +264,14 @@ DEFAULT_STAGES: dict[str, StageFn] = {
 
 def describe_input(ctx: BuildContext, name: str) -> str:
     """Short description of what a stage was working on, for crash messages."""
+    if name == "extract_spec" and ctx.spec_path is not None:
+        return f"spec={ctx.spec_path}"
     if name in ("load_inputs", "extract_spec"):
         return f"briefs={[str(b) for b in ctx.briefs]} openapi={ctx.openapi_path}"
+    if name in ("read_back", "export", "smoke_test"):
+        saved = ctx.results.get("saved")
+        wid = saved.get("workflow_id") if isinstance(saved, dict) else None
+        return f"workflow_id={wid}"
     if name in ("validate_spec", "compile_workflow"):
         if isinstance(ctx.spec, dict):
             return f"spec keys={sorted(ctx.spec)}"
@@ -270,6 +361,8 @@ def run_build(
     runs_dir: Path | None = None,
     stages: dict[str, StageFn] | None = None,
     on_run_dir: Callable[[Path], None] | None = None,
+    spec_path: Path | None = None,
+    client: Any = None,
 ) -> int:
     """Run every stage in STAGE_ORDER for one build. Returns the process exit code.
 
@@ -288,7 +381,11 @@ def run_build(
             openapi,
             cases,
             slot,
-            {"dry": dry, "layer order": " > ".join(str(b) for b in briefs)},
+            {
+                "dry": dry,
+                "layer order": " > ".join(str(b) for b in briefs),
+                "spec": str(spec_path) if spec_path is not None else "(extraction)",
+            },
         )
         ctx = BuildContext(
             root=root,
@@ -299,6 +396,8 @@ def run_build(
             cases=cases,
             run_dir=run_dir,
             trace=trace,
+            spec_path=Path(spec_path) if spec_path is not None else None,
+            client=client,
         )
         table: dict[str, StageFn] = {**DEFAULT_STAGES, **(stages or {})}
         for name in STAGE_ORDER:

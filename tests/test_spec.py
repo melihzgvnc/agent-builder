@@ -316,3 +316,18 @@ def test_cli_validate(tmp_path: Path) -> None:
     assert _run_cli("validate", str(broken)).returncode == 2
     missing = _run_cli("validate", str(tmp_path / "missing.json"))
     assert missing.returncode == 2 and missing.stderr
+
+
+def test_closing_close_tool_optional_round_trip() -> None:
+    data = load_fixture("spec_brief_a.json")
+    assert "close_tool" not in data["closing"]
+    assert load_spec(data).closing.close_tool is None
+    data["closing"]["close_tool"] = "end_session"
+    assert validate_spec(data) == []
+    spec = load_spec(data)
+    assert spec.closing.close_tool == "end_session"
+    dumped = spec_to_dict(spec)
+    assert dumped["closing"]["close_tool"] == "end_session"
+    assert load_spec(dumped) == spec
+    data["closing"]["close_tool"] = 5
+    assert validate_spec(data) == ["closing.close_tool: expected string"]

@@ -32,6 +32,7 @@ from builder.engine import (
     compute_facts,
     fill_template,
     one_date_for_all,
+    output_names,
     resolve_weekday,
     spoken_product_name,
 )
@@ -612,3 +613,41 @@ def test_check_promise_date_deadline_unknown() -> None:
     assert r == {"status": "deadline_unknown", "date": "", "deadline": ""}
     assert check_promise_date(D("2026-10-13"), TODAY, None, CAL)["status"] == "past"
     assert check_promise_date("nope", TODAY, None, CAL)["status"] == "invalid"
+
+
+def test_business_days_through() -> None:
+    from builder.engine import business_days_through
+
+    days = business_days_through(TODAY, D("2026-10-27"), CAL)
+    assert [d.isoformat() for d in days] == [
+        "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-19", "2026-10-20",
+        "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-27",
+    ]
+    assert business_days_through(D("2026-10-17"), D("2026-10-18"), CAL) == []
+    assert business_days_through(D("2026-10-20"), D("2026-10-14"), CAL) == []
+    assert business_days_through(D("2026-10-17"), D("2026-10-19"), CAL) == [D("2026-10-19")]
+
+
+def test_facts_business_days_and_callback_dates() -> None:
+    # Single early-band product: deadline 2026-11-02, so the list ends there.
+    facts = compute_facts({"now": NOW, IO["products_var"]: PUB_PRODUCTS["PUB-07"]}, SPEC_A, IO)
+    days = facts["business_days"].split(",")
+    assert days[0] == "2026-10-14" and days[-1] == "2026-11-02"
+    assert "2026-10-17" not in days and "2026-10-26" not in days
+    assert facts["callback_dates"] == "2026-10-14,2026-10-15"
+    # Several products: through the latest deadline among them.
+    multi = compute_facts({"now": NOW, IO["products_var"]: PUB_PRODUCTS["PUB-13"]}, SPEC_AB, IO)
+    assert multi["business_days"].split(",")[-1] == "2026-11-02"
+    # Unknown now: both empty.
+    unknown = compute_facts({IO["products_var"]: PUB_PRODUCTS["PUB-07"]}, SPEC_A, IO)
+    assert unknown["business_days"] == "" and unknown["callback_dates"] == ""
+    # No products: no deadline, so no business days (callback dates only need today).
+    none = compute_facts({"now": NOW}, SPEC_A, IO)
+    assert none["business_days"] == "" and none["callback_dates"] == "2026-10-14,2026-10-15"
+    # Band missing for the product: no deadline.
+    odd = compute_facts({"now": NOW, IO["products_var"]: [dict(PUB_PRODUCTS["PUB-07"][0], days_late=99)]}, SPEC_A, IO)
+    assert odd["business_days"] == ""
+    # Callback window with gaps: no dates at all.
+    gaps = compute_facts({"clock": NOW}, GAP_SPEC, IO)
+    assert gaps["callback_dates"] == ""
+    assert {"business_days", "callback_dates"} <= set(output_names(SPEC_A, IO))

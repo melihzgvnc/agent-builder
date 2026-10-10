@@ -111,6 +111,8 @@ def test_snippet_matches_engine(case: str, spec: dict[str, Any], restricted: boo
     assert facts["products_state"] == "known"
     assert facts["product_count"] == len(products)
     assert facts["today"] == "2026-10-14"
+    assert facts["business_days"].split(",")[0] == "2026-10-14"
+    assert facts["callback_dates"] == "2026-10-14,2026-10-15"
     business_line = next(line for line in facts["date_facts"].splitlines() if line.startswith("Next 10 business days"))
     assert "2026-10-15" in business_line and "2026-10-29" in business_line
     assert "2026-10-16" in business_line and "2026-10-27" in business_line
@@ -144,6 +146,7 @@ def _agreement_calls() -> list[tuple[str, Callable[[dict[str, Any]], object]]]:
     for days in (14, 20, 8, 45, 4, 5, 1, 7):
         cases.append((f"E2/E3 deadline {days}", lambda m, d=days: dl(m, d)))
     cases.append(("E3 add_business_days 12", lambda m: m["add_business_days"](TODAY, 12, cal(m))))
+    cases.append(("business_days_through", lambda m: m["business_days_through"](TODAY, D("2026-11-02"), cal(m))))
     cases.append(("E6", lambda m: m["check_promise_date"](D("2026-10-26"), TODAY, D("2026-11-02"), cal(m))))
     cases.append(("E7", lambda m: m["check_promise_date"](D("2026-11-06"), TODAY, D("2026-10-23"), cal(m))))
     cases.append(("deadline unknown", lambda m: m["check_promise_date"](D("2026-10-20"), TODAY, None, cal(m))))

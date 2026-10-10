@@ -109,3 +109,19 @@ def test_two_briefs_layered() -> None:
     finally:
         for d in new:
             shutil.rmtree(d)
+
+
+def test_spec_option_dry_writes_workflow() -> None:
+    runs_before = _run_dirs("brief-a-")
+    proc = _run_cli("briefs/brief-a.md", "--spec", "tests/fixtures/spec_brief_a.json", "--dry")
+    new = _run_dirs("brief-a-") - runs_before
+    try:
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert len(new) == 1, new
+        run_dir = next(iter(new))
+        assert (run_dir / "workflow.json").is_file()
+        assert (run_dir / "compile_report.json").is_file()
+        assert (run_dir / "trace.log").is_file()
+    finally:
+        for d in new:
+            shutil.rmtree(d)

@@ -1,7 +1,7 @@
 """Build a phone agent from one or more briefs.
 
 Usage:
-    python build.py <brief.md> [<brief.md> ...] [--openapi PATH] [--slot NAME] [--dry] [--cases FILE]
+    python build.py <brief.md> [<brief.md> ...] [--openapi PATH] [--slot NAME] [--dry] [--cases FILE] [--spec FILE]
 
 Briefs are layered in the order given: each later brief builds on the earlier ones.
 Each run writes only to runs/<slot>-<YYYYmmdd-HHMMSS>/ and prints that folder.
@@ -27,7 +27,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the command line; an invalid slot is an argparse error."""
     parser = argparse.ArgumentParser(
         prog="build.py",
-        usage="%(prog)s <brief.md> [<brief.md> ...] [--openapi PATH] [--slot NAME] [--dry] [--cases FILE]",
+        usage="%(prog)s <brief.md> [<brief.md> ...] [--openapi PATH] [--slot NAME] [--dry] [--cases FILE] [--spec FILE]",
         description="Build a phone agent from layered briefs (later briefs build on earlier ones).",
     )
     parser.add_argument("briefs", nargs="+", type=Path, metavar="<brief.md>")
@@ -40,6 +40,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--slot", default=None, help="slot name (default: stem of the last brief)")
     parser.add_argument("--dry", action="store_true", help="skip every stage that needs the network")
     parser.add_argument("--cases", type=Path, default=None, help="optional test cases file")
+    parser.add_argument(
+        "--spec",
+        type=Path,
+        default=None,
+        help="dev option: use this PolicySpec JSON instead of extraction",
+    )
     args = parser.parse_args(argv)
     try:
         args.slot = make_slot(args.briefs, args.slot)
@@ -63,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         dry=args.dry,
         cases=Path(args.cases) if args.cases is not None else None,
         on_run_dir=_print_run_dir,
+        spec_path=Path(args.spec) if args.spec is not None else None,
     )
     return code
 

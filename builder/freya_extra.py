@@ -58,10 +58,12 @@ def list_workflows(page_size: int = 100) -> list[dict[str, Any]]:
     return out
 
 
-def get_workflow(workflow_id: str) -> dict[str, Any]:
-    """One workflow as stored on the platform (network)."""
-    import freya
+def get_workflow(workflow_id: str, client: Any = None) -> dict[str, Any]:
+    """One workflow as stored on the platform (network). `client` defaults to the freya module."""
+    if client is None:
+        import freya as client
 
+    freya = client
     r = freya.api("GET", f"/api/v2/workflow/{workflow_id}", workspaceId=freya.workspace_id())
     if isinstance(r, dict):
         inner = r.get("workflow", r)
