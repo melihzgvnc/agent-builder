@@ -1,0 +1,725 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "policy-spec.schema.json",
+  "title": "PolicySpec",
+  "description": "Structured policy extracted from one or more layered bank briefs. Every rule parameter the builder uses comes from this document. Optional fields are omitted, never null. Anything that does not fit a structured field goes to verbatim_rules.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "meta", "account_fields", "calendar", "bands", "closing"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1", "description": "Version of this schema."},
+    "meta": {"$ref": "#/$defs/meta"},
+    "call_variables": {"$ref": "#/$defs/call_variables"},
+    "account_fields": {"$ref": "#/$defs/account_fields"},
+    "opening": {"$ref": "#/$defs/opening"},
+    "third_party": {"$ref": "#/$defs/third_party"},
+    "identity": {"$ref": "#/$defs/identity"},
+    "debt_statement": {"$ref": "#/$defs/debt_statement"},
+    "calendar": {"$ref": "#/$defs/calendar"},
+    "bands": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Lateness bands; each maps a days-late range to a promise deadline and a number of persuasion attempts.",
+      "items": {"$ref": "#/$defs/band"}
+    },
+    "amounts": {"$ref": "#/$defs/amounts"},
+    "promise_rules": {"$ref": "#/$defs/promise_rules"},
+    "persuasion": {"$ref": "#/$defs/persuasion"},
+    "intents": {
+      "type": "array",
+      "description": "Things the customer may say at any point and how the agent reacts.",
+      "items": {"$ref": "#/$defs/intent"}
+    },
+    "closing": {"$ref": "#/$defs/closing"},
+    "multi_product": {"$ref": "#/$defs/multi_product"},
+    "tools": {"$ref": "#/$defs/tools"},
+    "mandated_sentences": {
+      "type": "array",
+      "description": "Sentences the brief requires word for word.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["when", "text"],
+        "properties": {
+          "when": {"type": "string", "description": "Situation in which the sentence is said."},
+          "text": {"type": "string", "description": "Exact sentence."},
+          "source_ref": {"type": "string", "description": "Source rule reference."}
+        }
+      }
+    },
+    "verbatim_rules": {
+      "type": "array",
+      "description": "Rules kept as text because no structured field expresses them.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "text", "source_ref"],
+        "properties": {
+          "stage": {
+            "type": "string",
+            "enum": ["opening", "third_party", "identity", "debt", "negotiate", "closing", "global"]
+          },
+          "text": {"type": "string"},
+          "source_ref": {"type": "string"}
+        }
+      }
+    },
+    "coverage": {
+      "type": "array",
+      "description": "Maps every source rule reference to the spec paths that implement it (paths like a.b[0].c).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_ref", "paths"],
+        "properties": {
+          "source_ref": {"type": "string"},
+          "paths": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+          "note": {"type": "string"}
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "Ambiguities or gaps found while extracting the spec.",
+      "items": {"type": "string"}
+    }
+  },
+  "$defs": {
+    "outcome_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome"],
+      "description": "An outcome and optional reason; both must appear in closing.outcome_table.",
+      "properties": {
+        "outcome": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    },
+    "hhmm": {
+      "type": "string",
+      "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+      "description": "Time of day as HH:MM (24 hour)."
+    },
+    "iso_date": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "Calendar date as YYYY-MM-DD."
+    },
+    "weekday": {
+      "type": "string",
+      "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    },
+    "template": {
+      "type": "string",
+      "description": "Text with {name} slots filled from call variables or account fields."
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "description": "One step of the agent's reaction to an intent.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "say",
+            "say_once",
+            "sympathy",
+            "explain_once",
+            "ask_once",
+            "offer_transfer",
+            "transfer",
+            "add_note",
+            "close",
+            "no_persuasion",
+            "skip_promise",
+            "continue",
+            "record_customer_proposal"
+          ]
+        },
+        "text": {"$ref": "#/$defs/template"},
+        "queue": {"type": "string", "description": "Transfer queue (a transfer tool enum value)."},
+        "reason": {"type": "string", "description": "Note reason for add_note, or close reason for close."},
+        "outcome": {"type": "string", "description": "Close outcome for close."},
+        "question": {"$ref": "#/$defs/template"},
+        "on_accept": {"type": "array", "items": {"$ref": "#/$defs/action"}},
+        "on_decline": {"type": "array", "items": {"$ref": "#/$defs/action"}},
+        "then": {"type": "array", "items": {"$ref": "#/$defs/action"}}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["type"], "properties": {"type": {"enum": ["say", "say_once", "explain_once"]}}},
+          "then": {"required": ["text"]}
+        },
+        {
+          "if": {"required": ["type"], "properties": {"type": {"const": "transfer"}}},
+          "then": {"required": ["queue"]}
+        },
+        {
+          "if": {"required": ["type"], "properties": {"type": {"const": "add_note"}}},
+          "then": {"required": ["reason"]}
+        },
+        {
+          "if": {"required": ["type"], "properties": {"type": {"const": "close"}}},
+          "then": {"required": ["outcome"]}
+        },
+        {
+          "if": {"required": ["type"], "properties": {"type": {"const": "offer_transfer"}}},
+          "then": {"required": ["queue", "on_accept", "on_decline"]}
+        },
+        {
+          "if": {"required": ["type"], "properties": {"type": {"const": "ask_once"}}},
+          "then": {"required": ["then"]}
+        }
+      ]
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bank_name", "agent_identity"],
+      "properties": {
+        "bank_name": {"type": "string"},
+        "agent_identity": {"type": "string", "description": "Who the agent says it is."},
+        "language": {"type": "string", "default": "en", "description": "Call language. Default en."},
+        "currency": {"type": "string"},
+        "sources": {
+          "type": "array",
+          "description": "Input briefs in layer order.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "order"],
+            "properties": {
+              "path": {"type": "string"},
+              "order": {"type": "integer"},
+              "role": {"type": "string", "enum": ["base", "layer", "amendment", "code_list", "other"]},
+              "summary": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "call_variables": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["customer_id", "now"],
+      "description": "Names of the variables every call starts with.",
+      "properties": {
+        "customer_id": {"type": "string"},
+        "now": {"type": "string", "description": "Variable holding the current date and time."},
+        "first_name": {"type": "string"},
+        "last_name": {"type": "string"},
+        "title": {"type": "string"},
+        "extra": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "meaning": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "account_fields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product_id"],
+      "description": "Field names in the account tool response.",
+      "properties": {
+        "product_id": {"type": "string"},
+        "product_type": {"type": "string"},
+        "days_late": {"type": "string"},
+        "products_key": {"type": "string", "description": "Name of the products list in the account response."}
+      }
+    },
+    "opening": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "first_sentence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "template": {"$ref": "#/$defs/template"},
+            "must_include": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "forbidden_before_verification": {"type": "array", "items": {"type": "string"}},
+        "applies_to_everyone": {"type": "boolean"},
+        "confirmation_question": {"$ref": "#/$defs/template"},
+        "confirmation_accepted": {"type": "array", "items": {"type": "string"}},
+        "confirmation_not_accepted": {"type": "array", "items": {"type": "string"}},
+        "max_confirmation_asks": {"type": "integer", "minimum": 1},
+        "answer_question_first": {"type": "boolean"},
+        "on_unclear": {"$ref": "#/$defs/outcome_ref"},
+        "ai_question_answer": {"type": "string"},
+        "scam_question_answer": {"type": "string"}
+      }
+    },
+    "third_party": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Someone other than the customer answers.",
+      "properties": {
+        "say_nothing_beyond_opening": {"type": "boolean"},
+        "ask_when_reachable": {"type": "boolean"},
+        "callback_window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["days", "hour_start", "hour_end"],
+          "properties": {
+            "days": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind"],
+              "properties": {
+                "kind": {"type": "string", "enum": ["today_or_next_business_days"]},
+                "n": {"type": "integer", "minimum": 0, "description": "Number of following business days; no default."}
+              }
+            },
+            "hour_start": {"$ref": "#/$defs/hhmm"},
+            "hour_end": {"$ref": "#/$defs/hhmm"},
+            "inclusive": {"type": "boolean", "description": "Whether hour_end itself is allowed; no default."},
+            "must_be_after_now": {"type": "boolean", "description": "Whether the time must be later than now; no default."}
+          }
+        },
+        "reasks_when_outside": {"type": "integer", "minimum": 0},
+        "on_callback_scheduled": {"$ref": "#/$defs/outcome_ref"},
+        "on_no_valid_time": {"$ref": "#/$defs/outcome_ref"},
+        "on_not_customers_number": {"$ref": "#/$defs/outcome_ref"},
+        "on_customer_deceased": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sentence": {"type": "string"},
+            "ask_nothing_else": {"type": "boolean"},
+            "outcome": {"$ref": "#/$defs/outcome_ref"}
+          }
+        },
+        "others_may_answer_security": {"type": "boolean"},
+        "others_may_hear_account": {"type": "boolean"}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["questions", "max_wrong_total"],
+      "properties": {
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Security questions in the order they are asked.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "prompt"],
+            "properties": {
+              "field": {"type": "string", "description": "Value of the verify tool's field parameter."},
+              "prompt": {"$ref": "#/$defs/template"},
+              "answer_format": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind"],
+                "properties": {
+                  "kind": {"type": "string", "enum": ["date", "digits", "number", "text"]},
+                  "output_format": {"type": "string", "description": "Format sent to the tool, e.g. a date pattern."},
+                  "numeric_reading_order": {
+                    "type": "string",
+                    "enum": ["day_month_year", "month_day_year", "year_month_day"]
+                  },
+                  "digits": {"type": "integer", "minimum": 1},
+                  "notes": {"type": "string"}
+                }
+              }
+            }
+          }
+        },
+        "one_at_a_time": {"type": "boolean"},
+        "wrong_may_be_reasked": {"type": "boolean"},
+        "max_wrong_total": {"type": "integer", "minimum": 1},
+        "hints": {
+          "type": "array",
+          "description": "Hint values the verify tool may return and what to do with them.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["value", "instruction", "counts_as_wrong"],
+            "properties": {
+              "value": {"type": "string"},
+              "instruction": {"type": "string"},
+              "counts_as_wrong": {"type": "boolean"}
+            }
+          }
+        },
+        "on_failure": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "say": {"type": "string"},
+            "disclose_debt": {"type": "boolean"},
+            "outcome": {"$ref": "#/$defs/outcome_ref"}
+          }
+        },
+        "decline": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "explain_once": {"type": "string"},
+            "max_refusals": {"type": "integer", "minimum": 1},
+            "asking_purpose_counts_as_decline": {"type": "boolean"},
+            "outcome": {"$ref": "#/$defs/outcome_ref"}
+          }
+        }
+      }
+    },
+    "debt_statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "intro": {"type": "string", "description": "What the agent says about who it is and why it calls."},
+        "product_names": {
+          "type": "array",
+          "description": "Spoken name per product type.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["product_type", "template"],
+            "properties": {
+              "product_type": {"type": "string"},
+              "template": {"$ref": "#/$defs/template"}
+            }
+          }
+        },
+        "state_fields": {"type": "array", "items": {"type": "string"}, "description": "Account fields to state."},
+        "one_sentence_per_product": {"type": "boolean"}
+      }
+    },
+    "calendar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["weekend_days"],
+      "properties": {
+        "weekend_days": {"type": "array", "items": {"$ref": "#/$defs/weekday"}},
+        "holidays": {"type": "array", "items": {"$ref": "#/$defs/iso_date"}, "default": []},
+        "week_starts_on": {"$ref": "#/$defs/weekday", "default": "monday"},
+        "weekday_semantics": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Meaning of 'next <weekday>' and 'this <weekday>'. No default: when absent it is unresolved.",
+          "properties": {
+            "next": {"type": "string", "enum": ["following_calendar_week", "next_occurrence"]},
+            "this": {"type": "string", "enum": ["current_calendar_week", "next_occurrence_inclusive"]}
+          }
+        },
+        "vague_period": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ask_exact_day_times": {"type": "integer", "minimum": 0},
+            "then": {"type": "string", "enum": ["propose_deadline", "propose_attempt_date", "treat_as_refusal"]}
+          }
+        }
+      }
+    },
+    "band": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "days_late_min", "days_late_max", "deadline", "persuasion_attempts"],
+      "properties": {
+        "name": {"type": "string"},
+        "days_late_min": {"type": "integer", "description": "Inclusive."},
+        "days_late_max": {"type": "integer", "description": "Inclusive."},
+        "deadline": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "n"],
+          "properties": {
+            "kind": {"type": "string", "enum": ["business_days_after_today", "calendar_days_after_today"]},
+            "n": {"type": "integer", "minimum": 0},
+            "roll": {
+              "type": "string",
+              "enum": ["none", "previous_business_day", "next_business_day"],
+              "default": "none",
+              "description": "Adjustment of a calendar-day deadline that falls on a non-business day."
+            }
+          }
+        },
+        "persuasion_attempts": {"type": "integer", "minimum": 0}
+      }
+    },
+    "amounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["full_amount_field"],
+      "properties": {
+        "full_amount_field": {"type": "string", "description": "Account field holding the full amount."},
+        "floor_fields": {
+          "type": "object",
+          "description": "Product type -> account field holding the lowest acceptable amount.",
+          "additionalProperties": {"type": "string"}
+        },
+        "floor_default_field": {"type": "string"},
+        "ask_full_first": {"type": "boolean"},
+        "never_ask_customer_amount": {"type": "boolean"},
+        "forbidden_questions": {"type": "array", "items": {"type": "string"}},
+        "too_much": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "offer_floor_times": {"type": "integer", "minimum": 0},
+            "say_rest_stays_overdue": {"type": "boolean"},
+            "refusal_is_flat_refusal": {"type": "boolean"}
+          }
+        },
+        "accept_between_floor_and_full": {"type": "boolean"},
+        "below_floor": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "say": {"type": "string"},
+            "offer_floor_times": {"type": "integer", "minimum": 0},
+            "refusal_is_flat_refusal": {"type": "boolean"}
+          }
+        },
+        "above_full": {
+          "type": "string",
+          "enum": ["offer_full", "accept_full", "not_specified"],
+          "default": "not_specified"
+        },
+        "rounding_decimals": {"type": "integer", "minimum": 0, "default": 2}
+      }
+    },
+    "promise_rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "earliest": {"type": "string", "enum": ["today"]},
+        "must_be_business_day": {"type": "boolean"},
+        "latest": {"type": "string", "enum": ["deadline"]},
+        "on_non_business_day": {"type": "string", "enum": ["offer_next_business_day", "reject"]},
+        "on_after_deadline": {"type": "string", "enum": ["offer_deadline", "reject"]},
+        "refusing_deadline_is_flat_refusal": {"type": "boolean"},
+        "first_ask": {"type": "string"},
+        "readback": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "template": {"$ref": "#/$defs/template"},
+            "confirmation_question": {"type": "string"},
+            "require_clear_yes": {"type": "boolean"},
+            "recheck_on_change": {"type": "boolean"}
+          }
+        },
+        "one_promise_per_product": {"type": "boolean"},
+        "allow_change_or_cancel": {"type": "boolean"},
+        "change_request_answer": {"type": "string"},
+        "retries_on_failure": {"type": "integer", "minimum": 0},
+        "say_recorded_only_after_ok": {"type": "boolean"},
+        "success_sentence": {"type": "string"},
+        "on_failure": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "say": {"type": "string"},
+            "outcome": {"$ref": "#/$defs/outcome_ref"}
+          }
+        },
+        "forbidden_offers": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "persuasion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["index", "date_rule", "amount_rule"],
+            "properties": {
+              "index": {"type": "integer", "minimum": 1},
+              "bands": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Band names this attempt applies to; omit for all bands."
+              },
+              "date_rule": {
+                "type": "string",
+                "enum": ["last_business_day_this_week_or_next_if_today", "deadline", "today", "next_business_day"]
+              },
+              "amount_rule": {"type": "string", "enum": ["full_or_floor_if_too_much", "floor", "full"]},
+              "note": {"type": "string"}
+            }
+          }
+        },
+        "flat_refusal_definition": {"type": "string"},
+        "customer_proposal_is_never_refusal": {"type": "boolean"},
+        "do_not_repeat_refused_offer": {"type": "boolean"},
+        "on_exhausted": {"$ref": "#/$defs/outcome_ref"}
+      }
+    },
+    "intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "triggers", "actions"],
+      "properties": {
+        "name": {"type": "string"},
+        "triggers": {"type": "array", "items": {"type": "string"}, "description": "What the customer says."},
+        "precedence": {"type": "integer", "default": 100, "description": "Lower is handled first."},
+        "applies_before_verification": {"type": "boolean", "default": false},
+        "applies_after_verification": {"type": "boolean", "default": true},
+        "occurrences_before_action": {"type": "integer", "minimum": 1, "default": 1},
+        "actions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/action"}},
+        "notes": {"type": "string"}
+      }
+    },
+    "closing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome_table"],
+      "properties": {
+        "outcome_table": {
+          "type": "array",
+          "minItems": 1,
+          "description": "One row per allowed outcome / reason pair.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["outcome", "when"],
+            "properties": {
+              "outcome": {"type": "string"},
+              "reason": {"type": "string"},
+              "when": {"type": "string"},
+              "source_refs": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        },
+        "close_tool_last": {"type": "boolean"},
+        "exactly_one_close": {"type": "boolean"},
+        "goodbye_before_close": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "required": {"type": "boolean"},
+            "text": {"type": "string"}
+          }
+        },
+        "aggregation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["precedence"],
+          "description": "How the final outcome is derived from per-product results.",
+          "properties": {
+            "precedence": {
+              "type": "array",
+              "items": {"type": "string", "enum": ["transfer", "any_promise", "all_notes_equal", "first_note_not_equal"]}
+            },
+            "transfer_outcome": {"type": "string"},
+            "promise_outcome": {"type": "string"},
+            "all_notes_equal": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["note_reason", "outcome"],
+              "properties": {
+                "note_reason": {"type": "string"},
+                "outcome": {"type": "string"}
+              }
+            },
+            "first_note_not_equal": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["excluded_reason", "outcome"],
+              "properties": {
+                "excluded_reason": {"type": "string"},
+                "outcome": {"type": "string"}
+              }
+            },
+            "default": {"$ref": "#/$defs/outcome_ref"}
+          }
+        }
+      }
+    },
+    "multi_product": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean", "default": false},
+        "max_products": {"type": "integer", "minimum": 1, "default": 1},
+        "state_all_before_asking": {"type": "boolean"},
+        "ask_all_today_first": {"type": "boolean"},
+        "order": {"type": "string", "enum": ["account_order"], "default": "account_order"},
+        "per_product_attempts": {"type": "boolean"},
+        "one_date_for_all": {
+          "type": "string",
+          "enum": ["cap_each_to_own_deadline", "reject_if_any_after_deadline"],
+          "description": "How one date for several products is handled. No default: when absent, a date after a product's deadline is unresolved."
+        },
+        "say_capped_in_readback": {"type": "boolean"},
+        "combined_readback": {"type": "boolean"},
+        "notes": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "for_products_without_promise": {"type": "boolean"},
+            "reasons": {"type": "array", "items": {"type": "string"}},
+            "also_when_none_promised": {"type": "boolean", "description": "Notes are also added when no product gets a promise."}
+          }
+        },
+        "claim_on_one_product_continues": {"type": "boolean"},
+        "on_transfer": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "add_no_notes": {"type": "boolean"},
+            "keep_recorded_promises": {"type": "boolean"},
+            "drop_unrecorded_promises": {"type": "boolean"}
+          }
+        },
+        "on_promise_failure": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "note_reason": {"type": "string"}
+          }
+        }
+      }
+    },
+    "tool_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "purpose": {"type": "string"},
+        "field_map": {
+          "type": "object",
+          "description": "Semantic name -> tool field name.",
+          "additionalProperties": {"type": "string"}
+        },
+        "allowed_values": {
+          "type": "object",
+          "description": "Tool field name -> allowed values.",
+          "additionalProperties": {"type": "array", "items": {"type": "string"}}
+        },
+        "notes": {"type": "string"}
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verify_identity": {"$ref": "#/$defs/tool_override"},
+        "get_account": {"$ref": "#/$defs/tool_override"},
+        "create_promise": {"$ref": "#/$defs/tool_override"},
+        "add_note": {"$ref": "#/$defs/tool_override"},
+        "schedule_callback": {"$ref": "#/$defs/tool_override"},
+        "transfer_to_agent": {"$ref": "#/$defs/tool_override"},
+        "close_call": {"$ref": "#/$defs/tool_override"}
+      }
+    }
+  }
+}

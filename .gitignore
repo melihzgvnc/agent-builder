@@ -1,0 +1,19 @@
+# secrets
+env.sh
+.env
+
+# environment
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# per-run output and platform state
+runs/
+results/
+traces/
+out/
+.freya-agents.json
+.personas.json
+*.workflow.json
+!tests/**/*.workflow.json
