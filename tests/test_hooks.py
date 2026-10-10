@@ -870,3 +870,53 @@ def test_callback_pre_computes_calendar_when_facts_not_run() -> None:
     d = engine.allowed_callback_dates(engine.parse_now(NOW).date(), SPEC_A, cal)[-1].isoformat()
     v, out, _ = run(src, {SPEC_A["call_variables"]["now"]: NOW}, config={"body": {"date": d, "time": "11:00"}})
     assert out["body"] == {"date": d, "time": "11:00"} and v["callback_state"] == ""
+
+
+# ---------------------------------------------------------------------------------------------
+# identity gate and last-try warning
+# ---------------------------------------------------------------------------------------------
+
+WRONG = {"ok": True, "verified": False, "all_verified": False}
+
+
+def test_verify_last_try_text_when_one_wrong_answer_is_left() -> None:
+    v: dict[str, Any] = {}
+    texts = []
+    for _ in range(2):
+        v, data = verify(v, dict(WRONG))
+        texts.append(data["what_to_do_next"])
+    assert "submit it to the tool first" not in texts[0]
+    assert "submit it to the tool first" in texts[1]
+    v, data = verify(v, dict(WRONG))
+    assert v["identity_state"] == "failed" and "submit it to the tool first" not in data["what_to_do_next"]
+
+
+def test_verify_last_try_text_follows_max_wrong_and_bank_count() -> None:
+    cfg = verify_cfg(SPEC_AB)
+    cfg["max_wrong"] = 2
+    _, _, res = run(hooks.verify_post_hook(cfg), {}, result={"data": dict(WRONG)})
+    assert "submit it to the tool first" in res["data"]["what_to_do_next"]
+    cfg["max_wrong"] = None
+    _, _, res = run(hooks.verify_post_hook(cfg), {}, result={"data": dict(WRONG, wrong_answers_left=1)})
+    assert "submit it to the tool first" in res["data"]["what_to_do_next"]
+    _, _, res = run(hooks.verify_post_hook(cfg), {}, result={"data": dict(WRONG, wrong_answers_left=2)})
+    assert "submit it to the tool first" not in res["data"]["what_to_do_next"]
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+@pytest.mark.parametrize("spec", [SPEC_A, SPEC_AB])
+def test_pre_hooks_block_when_identity_failed(spec: dict[str, Any], layout: str) -> None:
+    base = {f"p1_{n}": x for n, x in (("id", "P1"), ("name", "n"), ("full", 100.0), ("floor", 50.0), ("deadline", "2026-11-02"))}
+    base["business_days"] = "2026-10-14,2026-10-15"
+    cases = [
+        (hooks.promise_pre_hook(promise_cfg(spec)), {"product_id": "P1", "amount": 100, "date": "2026-10-15"}, "product_id", "promise_guard"),
+        (hooks.note_pre_hook(note_cfg(spec)), {"product_id": "P1", "reason": "refused"}, "product_id", "note_guard"),
+        (hooks.transfer_pre_hook(transfer_cfg(spec)), {"queue": "support"}, "queue", "transfer_guard"),
+        (hooks.account_pre_hook({"fields": {"customer": "customer_id"}}), {"customer_id": "C1"}, "customer_id", "account_guard"),
+    ]
+    for src, body, field, guard in cases:
+        v, cfg, _ = run(src, dict(base, identity_state="failed"), config={"body": dict(body)}, layout=layout)
+        assert cfg["body"][field] == "" and v[guard] == "blocked"
+        for state in ({"identity_state": "pending"}, {"identity_state": "verified"}, {}):
+            v, cfg, _ = run(src, dict(base, **state), config={"body": dict(body)}, layout=layout)
+            assert cfg["body"][field] != "" and guard not in v

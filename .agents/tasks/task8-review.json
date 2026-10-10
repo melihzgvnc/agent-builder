@@ -1,0 +1,10 @@
+{
+  "verdict": "CHANGES_REQUESTED",
+  "findings": [
+    "Brief A on layered not met (confirmed): results/task8-a-on-layered-stability.json shows 7 of 10 customers at 3/3; PUB-05, PUB-08, PUB-10 at 0/3. Pass them or record a user waiver.",
+    "Waiver unverifiable (confirmed): the waiver appears only in task8-code-report.md as relayed text, not in the user's messages or the plan. Put it in the plan/gate so the verdict can be APPROVED.",
+    "PUB-10 may be an extraction-fidelity problem (likely): the brief-a agent passes 3/3 with an opening that omits the Brief A rule 1 notice, the layered agent keeps it and fails deterministically. Decide which behaviour is correct.",
+    "Part 1 and Task 8 changes are mixed in the uncommitted tree (confirmed): commit Part 1 first so Task 8 is reviewable alone."
+  ],
+  "reviewDoc": "/Users/melih/Desktop/build-the-builder/.agents/tasks/task8-review.md"
+}

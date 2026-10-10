@@ -892,6 +892,12 @@ def _date_facts(now: datetime.datetime, spec: dict, cal: dict) -> str:
     return "\n".join(lines)
 
 
+def _floor_offered_once(spec: dict) -> bool:
+    amounts = spec.get("amounts")
+    too_much = amounts.get("too_much") if isinstance(amounts, dict) else None
+    return isinstance(too_much, dict) and too_much.get("offer_floor_times") == 1
+
+
 def _product_block(i: int, product: dict, today: datetime.date | None, spec: dict, cal: dict) -> str:
     lines = []
     pid = _product_id(product, spec)
@@ -919,6 +925,11 @@ def _product_block(i: int, product: dict, today: datetime.date | None, spec: dic
         if alt is not None and alt["amount"] != offer["amount"]:
             text += " (if the customer already said the full amount is too much: "
             text += _money(alt["amount"], spec) + " on " + alt["date"] + ")"
+        if k >= 2 and _floor_offered_once(spec):
+            fl = floor_for(product, spec)
+            if fl is not None and (offer["amount"] == fl or (alt is not None and alt["amount"] == fl)):
+                text += (" [a repeat of the floor offer: use it only after the customer has clearly refused the floor offer, "
+                         "never in reply to an answer that is not a refusal]")
         lines.append(text)
     return "\n".join(lines)
 

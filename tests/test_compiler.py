@@ -187,7 +187,7 @@ def test_no_default_collisions_and_written_vars(key: str) -> None:
 @pytest.mark.parametrize("key", ["A", "AB"])
 def test_identity_transition_tests_both_spellings(key: str) -> None:
     wf, _ = compiled(key)
-    first = wf["nodes"]["identity"]["transitions"][0]
+    first = wf["nodes"]["identity"]["transitions"][1]
     assert first["target_node"] == "get_account"
     leaves = {(c["variable"], c["operand"]) for c in first["condition"]["conditions"]}
     for var in ("verify_identity_response.data.all_verified", "identity_all_verified"):
@@ -244,8 +244,8 @@ def test_closing_sources_and_exit_nodes() -> None:
     assert spoken["spoken_message"]["default"] == spec.identity.on_failure.say + " " + spec.closing.goodbye_before_close.text
     silent = wf["nodes"]["end_not_verified_declined"]["terminal"]["function"]["parameters"]["properties"]
     assert silent["message_mode"]["default"] == "none"
-    assert wf["nodes"]["identity"]["transitions"][1]["target_node"] == "exit_not_verified_failed_say"
-    assert wf["nodes"]["negotiate"]["transitions"][0]["target_node"] == "exit_no_promise_service_error_say"
+    assert wf["nodes"]["identity"]["transitions"][0]["target_node"] == "exit_not_verified_failed_say"
+    assert wf["nodes"]["negotiate"]["transitions"][1]["target_node"] == "exit_no_promise_service_error_say"
     assert wf["nodes"]["identity"]["max_turn_transition"] == "exit_not_verified_declined"
     assert wf["nodes"]["negotiate"]["max_turn_transition"] == "finalize_forced"
 
@@ -386,8 +386,8 @@ def test_missing_failure_outcomes_are_gaps_not_crashes() -> None:
     spec_d["promise_rules"].pop("on_failure")
     wf, report = compile_dicts(spec_d)
     assert len([g for g in report.gaps if "on_failure" in g]) == 2
-    assert wf["nodes"]["identity"]["transitions"][1]["target_node"] == "finalize_forced"
-    assert wf["nodes"]["negotiate"]["transitions"][0]["target_node"] == "finalize_forced"
+    assert wf["nodes"]["identity"]["transitions"][0]["target_node"] == "finalize_forced"
+    assert wf["nodes"]["negotiate"]["transitions"][1]["target_node"] == "finalize_forced"
     assert not [x for x in report.lint if x.startswith("ERROR")], report.lint
 
 
@@ -630,7 +630,7 @@ def test_scenario_identity_failure(key: str) -> None:
     assert call.vars["identity_state"] == "failed" and call.vars["identity_wrong"] == 3
     assert "Verification failed" in out["what_to_do_next"]
     identity = call.wf["nodes"]["identity"]
-    failed = identity["transitions"][1]
+    failed = identity["transitions"][0]
     assert failed["condition"]["conditions"][0] == {
         "variable": "identity_state", "operator": "equals", "operand": "failed", "mode": "exact"}
     exit_code = code_of(call.wf["nodes"][failed["target_node"]])
@@ -651,7 +651,7 @@ def test_scenario_promise_failing_twice_single() -> None:
     assert "same values" in data["what_to_do_next"] and call.vars.get("promise_state", "") == ""
     call.promise("p1", 540.0, "2026-10-15", ok=False)
     assert call.vars["promise_state"] == "write_failed"
-    neg = call.wf["nodes"]["negotiate"]["transitions"][0]
+    neg = call.wf["nodes"]["negotiate"]["transitions"][1]
     assert neg["condition"]["conditions"][0]["operand"] == "write_failed"
     run_hook(code_of(call.wf["nodes"][neg["target_node"]]), call.vars)
     assert (call.vars["final_outcome"], call.vars["final_reason"]) == ("no_promise", "service_error")
@@ -710,3 +710,23 @@ def test_scenario_callback_valid_and_invalid() -> None:
     assert "final_outcome" not in call2.vars  # not scheduled: nothing written, routes back
     run_hook(code_of(call.wf["nodes"]["exit_not_reached_callback_gated"]), call.vars)
     assert (call.vars["final_outcome"], call.vars["final_reason"]) == ("not_reached", "callback")
+
+
+@pytest.mark.parametrize("key", ["A", "AB"])
+def test_failed_identity_wins_and_account_is_reached_only_when_verified(key: str) -> None:
+    wf, _ = compiled(key)
+    trans = wf["nodes"]["identity"]["transitions"]
+    assert [(c["variable"], c["operand"]) for c in trans[0]["condition"]["conditions"]] == [("identity_state", "failed")]
+    assert trans[0]["target_node"] != "get_account"
+    targets = [t["target_node"] for n in wf["nodes"].values() for t in n.get("transitions", []) if t.get("target_node") == "get_account"]
+    assert targets == ["get_account"]
+    neg = wf["nodes"]["negotiate"]["transitions"][0]
+    assert [(c["variable"], c["operand"]) for c in neg["condition"]["conditions"]] == [("identity_state", "failed")]
+    assert neg["target_node"] == trans[0]["target_node"]
+
+
+@pytest.mark.parametrize("key", ["A", "AB"])
+def test_account_tool_has_the_identity_gate_pre_hook(key: str) -> None:
+    wf, _ = compiled(key)
+    tool = wf["nodes"]["get_account"]["pre_actions"][0]
+    assert "identity_state" in tool["pre_process_code"] and "blocked" in tool["pre_process_code"]

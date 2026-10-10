@@ -106,7 +106,7 @@ ENGINE_SPEC_KEYS: dict[str, tuple[str, ...] | None] = {
     "account_fields": None,
     "calendar": ("weekend_days", "holidays", "week_starts_on", "weekday_semantics"),
     "bands": None,
-    "amounts": ("full_amount_field", "floor_fields", "floor_default_field", "rounding_decimals"),
+    "amounts": ("full_amount_field", "floor_fields", "floor_default_field", "rounding_decimals", "too_much"),
     "persuasion": ("attempts",),
     "debt_statement": ("product_names",),
     "multi_product": ("enabled", "max_products", "one_date_for_all"),

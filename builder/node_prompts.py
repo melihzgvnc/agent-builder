@@ -505,6 +505,10 @@ def _identity_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
         lines.append(text + ".")
     if idn.one_at_a_time:
         lines.append("Ask one question at a time. Call " + tool + " for each answer before you ask the next question.")
+    lines.append(
+        "A message that contains an answer must be submitted to " + tool + " first, even when it also contains a question or a complaint; "
+        "discuss nothing else until the tool result is in."
+    )
     if idn.wrong_may_be_reasked:
         lines.append("A wrong answer may be asked again.")
     lines.append(
@@ -627,6 +631,9 @@ def _amount_lines(spec: PolicySpec) -> list[str]:
             text += " and say the rest stays overdue"
         if tm.offer_floor_times == 1:
             text += ". Make that offer in one message, with its date from the product facts, and never offer the floor amount again afterwards"
+            text += (". An answer to the floor offer that neither accepts nor clearly refuses it (the customer leaves the choice to you, asks something or is unsure) "
+                     "is no reason for a new offer and no reason to say the offer again: do not repeat its amount or date; "
+                     "answer a question in one short sentence if there is one, then ask only the confirmation question")
         if tm.refusal_is_flat_refusal:
             text += ". A refusal of the floor amount is a flat refusal"
         lines.append(text + ".")
@@ -786,6 +793,9 @@ def _multi_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
     if not mp.enabled:
         return []
     lines = ["The account can have up to " + str(mp.max_products) + " products; handle each product."]
+    promise_tool = _tool(ctx, "create_promise")
+    if promise_tool:
+        lines.append("Call " + promise_tool + " for one product at a time: wait for its result before you call it for the next product. Never call it for several products in the same turn.")
     if mp.one_date_for_all == "cap_each_to_own_deadline":
         lines.append("One date can be used for all products. A product whose latest promise date is earlier gets its own latest promise date.")
     elif mp.one_date_for_all == "reject_if_any_after_deadline":

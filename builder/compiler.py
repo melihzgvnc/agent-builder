@@ -934,6 +934,7 @@ class _Build:
         if self.has[ROLE_TRANSFER]:
             neg_tools_by_role[ROLE_TRANSFER] = self.transfer_tool(_tt(NODE_FINALIZE))
         account_tool = self.tool(ROLE_ACCOUNT, max_retries=ACCOUNT_RETRIES, description="")
+        tools_gen.attach_hooks(account_tool, pre=hooks.account_pre_hook({"fields": {"customer": self.fields[ROLE_ACCOUNT].get("customer")}}))
 
         # prompts
         id_ctx = self.ctx({r: t["function"]["name"] for r, t in id_tools_by_role.items()}, id_exits, _tt(NODE_FINALIZE_EARLY), {})
@@ -954,8 +955,8 @@ class _Build:
         if keys["all_verified"]:
             verified_leaves += _true_pair(ROLE_VERIFY + "_response.data." + keys["all_verified"])
             verified_leaves += _true_pair(VAR_ALL_VERIFIED)
-        id_trans.append(_group("The security questions are passed", NODE_ACCOUNT, verified_leaves))
         id_trans.append(_group("The security check failed", failed_exit.code if failed_exit else NODE_FINALIZE_FORCED, [_eq("identity_state", "failed")]))
+        id_trans.append(_group("The security questions are passed", NODE_ACCOUNT, verified_leaves))
         ordered: list[_Exit] = []
         for ex in ([cb_exit] if cb_exit else []) + id_exits:
             if ex not in ordered:
@@ -987,6 +988,7 @@ class _Build:
             [_group("No products could be read", NODE_BACKEND_EXIT, [_eq("products_state", "unknown")]), _always(NODE_NEGOTIATE)],
         )
         neg_trans: list[dict] = [
+            _group("The security check failed", failed_exit.code if failed_exit else NODE_FINALIZE_FORCED, [_eq("identity_state", "failed")]),
             _group("A promise could not be recorded", write_exit.code if write_exit else NODE_FINALIZE_FORCED, [_eq("promise_state", "write_failed")]),
             _tool_transition(NODE_FINALIZE, "Everything is handled or the call was transferred; the call can end"),
         ]

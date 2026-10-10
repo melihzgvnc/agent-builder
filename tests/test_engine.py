@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import builder.engine as engine
 from builder.engine import (
     add_business_days,
     aggregate_outcome,
@@ -651,3 +652,23 @@ def test_facts_business_days_and_callback_dates() -> None:
     gaps = compute_facts({"clock": NOW}, GAP_SPEC, IO)
     assert gaps["callback_dates"] == ""
     assert {"business_days", "callback_dates"} <= set(output_names(SPEC_A, IO))
+
+
+def _all_product_text(spec: dict[str, Any]) -> list[str]:
+    out = []
+    for prods in PUB_PRODUCTS.values():
+        for i, p in enumerate(prods, start=1):
+            out.append(engine._product_block(i, p, TODAY, spec, CAL))
+    return out
+
+
+def test_product_block_marks_repeat_floor_offer_only_when_floor_is_offered_once() -> None:
+    marker = "a repeat of the floor offer"
+    texts = _all_product_text(SPEC_A)
+    attempt2 = [ln for t in texts for ln in t.splitlines() if ln.startswith("- attempt 2 offer")]
+    assert attempt2 and any(marker in ln for ln in attempt2)
+    assert not any(marker in ln for t in texts for ln in t.splitlines() if ln.startswith("- attempt 1 offer"))
+    for value in (None, 2):
+        spec = copy.deepcopy(SPEC_A)
+        spec["amounts"]["too_much"]["offer_floor_times"] = value
+        assert not any(marker in t for t in _all_product_text(spec))

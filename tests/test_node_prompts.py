@@ -215,6 +215,12 @@ def test_negotiate_task_multi_block_and_note_path() -> None:
     assert "transition_to_x_refused" not in text
 
 
+def test_negotiate_task_multi_asks_for_sequential_tool_calls() -> None:
+    text = node_prompts.negotiate_task(SPEC_AB, neg_ctx(SPEC_AB, notes=True))
+    assert "one product at a time" in text and "same turn" in text
+    assert "Call create_promise for one product at a time" in text
+    single = node_prompts.negotiate_task(SPEC_A, neg_ctx(SPEC_A))
+    assert "one product at a time" not in single
 def test_negotiate_task_omits_what_the_spec_omits() -> None:
     def edit(d: dict[str, Any]) -> None:
         d["promise_rules"].pop("success_sentence")
@@ -296,3 +302,18 @@ def test_negotiate_task_retries_a_failed_promise_call_and_holds_dates_rules() ->
     text = node_prompts.negotiate_task(SPEC_A, neg_ctx(SPEC_A))
     assert "call the tool again with exactly the same values" in text
     assert "Do not offer the latest promise date instead" in text
+
+
+def test_identity_task_has_submit_first_rule() -> None:
+    text = node_prompts.identity_task(SPEC_A, id_ctx(SPEC_A))
+    assert "must be submitted to" in text and "even when it also contains a question" in text
+
+
+def test_amounts_read_back_rule_only_when_floor_offered_once() -> None:
+    marker = "do not repeat its amount or date"
+    assert marker in "\n".join(node_prompts._amount_lines(SPEC_A))
+    assert "ask only the confirmation question" in "\n".join(node_prompts._amount_lines(SPEC_A))
+    for value in (2,):
+        def edit(d: dict[str, Any], v: Any = value) -> None:
+            d["amounts"]["too_much"]["offer_floor_times"] = v
+        assert marker not in "\n".join(node_prompts._amount_lines(mutated(SPEC_A_DICT, edit)))

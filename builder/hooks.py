@@ -14,7 +14,7 @@ Python source for the platform sandbox. Rules every generated source follows:
 
 Variables hooks write (the compiler checks them against every model-filled field):
 identity_state, identity_wrong, identity_verified_count, callback_state, callback_invalid_count,
-callback_guard, callback_sent_date, callback_sent_time, promise_idx, promise_guard,
+callback_guard, account_guard, transfer_guard, callback_sent_date, callback_sent_time, promise_idx, promise_guard,
 promise_asked_date, promise_asked_amount, promise_sent_date, promise_sent_amount,
 promise_changed, promise_state, p<k>_promise, p<k>_promise_fails, p<k>_promise_date,
 p<k>_promise_amount, p<k>_note, p<k>_note_fails, note_idx, note_guard, note_sent_reason,
@@ -44,6 +44,11 @@ DEFAULT_TEXTS: dict[str, str] = {
     "next_question": (
         "That answer was accepted. The customer is not verified yet. Ask the next security question, "
         "or ask again a question whose answer was not accepted. Do not say the customer is verified."
+    ),
+    "last_try": (
+        "Only one more wrong answer is allowed before the check ends. If the customer's next message contains an answer, "
+        "submit it to the tool first, even when the same message also asks something or complains. "
+        "Answer no question before the tool result is in."
     ),
     "verified": "All security questions are passed. Ask nothing more; the call moves on by itself.",
     "failed": "Verification failed. Ask nothing more; the call moves on by itself.",
@@ -211,6 +216,11 @@ def _money(x):
 # The same helpers without the money function (hooks that have no DEC constant).
 _H_BASE_NODEC = _H_BASE.split("def _money")[0]
 
+_H_GATE = """
+def _gated():
+    return _s(vars.get('identity_state')) == 'failed'
+"""
+
 _H_DATE = """
 def _valid_date(d):
     if len(d) != 10 or d[4] != '-' or d[7] != '-':
@@ -311,6 +321,7 @@ if isinstance(data, dict):
     vcount = _int(vars.get('identity_verified_count'))
     text = ''
     ok = True
+    counted = False
     if RESP_OK != '':
         ok = _true(data.get(RESP_OK))
     v = None
@@ -338,6 +349,7 @@ if isinstance(data, dict):
                 text = _s(matched.get('instruction'))
             else:
                 wrong += 1
+                counted = True
                 text = T_WRONG
                 if matched is not None:
                     text = text + ' ' + _s(matched.get('instruction'))
@@ -354,6 +366,15 @@ if isinstance(data, dict):
         text = T_FAILED
     elif text == '':
         text = T_NEXT_QUESTION
+    if counted and state == 'pending':
+        left = None
+        if MAXW is not None:
+            left = MAXW - wrong
+        if wl is not None:
+            if left is None or wl < left:
+                left = wl
+        if left is not None and left == 1:
+            text = text + ' ' + T_LAST
     vars['identity_state'] = state
     vars['identity_wrong'] = wrong
     vars['identity_verified_count'] = vcount
@@ -389,6 +410,7 @@ def verify_post_hook(cfg: dict) -> str:
         ("T_ASK_AGAIN", t["ask_again"]),
         ("T_VERIFIED", t["verified"]),
         ("T_FAILED", t["failed"]),
+        ("T_LAST", t["last_try"]),
         ("T_NEXT_QUESTION", t["next_question"]),
     ]
     return _assemble("post", consts, [_H_BASE_NODEC], _VERIFY_BODY)
@@ -597,7 +619,10 @@ def callback_post_hook(cfg: dict) -> str:
 
 _PROMISE_PRE_BODY = """
 body = config.get('body')
-if isinstance(body, dict):
+if isinstance(body, dict) and _gated():
+    body[F_PROD] = ''
+    vars['promise_guard'] = 'blocked'
+elif isinstance(body, dict):
     k = _pick(body.get(F_PROD))
     if k == 0:
         vars['promise_guard'] = 'skipped'
@@ -699,7 +724,7 @@ def promise_pre_hook(cfg: dict) -> str:
         ("F_AMT", str(f.get("amount") or "amount")),
         ("F_DATE", str(f.get("date") or "date")),
     ]
-    return _assemble("pre", consts, [_H_BASE, _H_DATE, _H_ACTIVE, _H_PICK], _PROMISE_PRE_BODY)
+    return _assemble("pre", consts, [_H_BASE, _H_GATE, _H_DATE, _H_ACTIVE, _H_PICK], _PROMISE_PRE_BODY)
 
 
 _PROMISE_POST_BODY = """
@@ -781,7 +806,10 @@ def promise_post_hook(cfg: dict) -> str:
 
 _NOTE_PRE_BODY = """
 body = config.get('body')
-if isinstance(body, dict):
+if isinstance(body, dict) and _gated():
+    body[F_PROD] = ''
+    vars['note_guard'] = 'blocked'
+elif isinstance(body, dict):
     k = _pick(body.get(F_PROD))
     if k == 0:
         vars['note_guard'] = 'skipped'
@@ -826,7 +854,7 @@ def note_pre_hook(cfg: dict) -> str:
         ("FALLBACK", str(cfg.get("fallback_reason") or "")),
         ("REASONS", list(cfg.get("reasons") or [])),
     ]
-    return _assemble("pre", consts, [_H_BASE, _H_ACTIVE, _H_PICK], _NOTE_PRE_BODY)
+    return _assemble("pre", consts, [_H_BASE, _H_GATE, _H_ACTIVE, _H_PICK], _NOTE_PRE_BODY)
 
 
 _NOTE_POST_BODY = """
@@ -891,12 +919,37 @@ def transfer_pre_hook(cfg: dict) -> str:
     body = """
     body = config.get('body')
     if isinstance(body, dict):
+        if _gated():
+            body[F_QUEUE] = ''
+            vars['transfer_guard'] = 'blocked'
         vars['transfer_sent_queue'] = _s(body.get(F_QUEUE))
     """
     return _assemble(
         "pre",
         [("F_QUEUE", str(f.get("queue") or "queue"))],
-        [_H_BASE_NODEC],
+        [_H_BASE_NODEC, _H_GATE],
+        body,
+    )
+
+
+def account_pre_hook(cfg: dict) -> str:
+    """Pre-hook of the account lookup tool: no lookup for a caller whose identity check failed.
+
+    cfg keys: fields: dict customer -> body field name. When vars['identity_state'] is
+    'failed' the customer id field is blanked and vars['account_guard'] = 'blocked', so the bank
+    returns no account data. Gates only on an explicit 'failed'.
+    """
+    f = cfg.get("fields") or {}
+    body = """
+    body = config.get('body')
+    if isinstance(body, dict) and _gated():
+        body[F_CUSTOMER] = ''
+        vars['account_guard'] = 'blocked'
+    """
+    return _assemble(
+        "pre",
+        [("F_CUSTOMER", str(f.get("customer") or "customer_id"))],
+        [_H_BASE_NODEC, _H_GATE],
         body,
     )
 
