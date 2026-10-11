@@ -12,8 +12,11 @@ Each run writes only to runs/<slot>-<YYYYmmdd-HHMMSS>/ and prints that folder.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 # A run never writes into its own source tree, so no builder/__pycache__ either.
@@ -26,6 +29,8 @@ if str(ROOT) not in sys.path:
 from builder import folder_input  # noqa: E402
 from builder.inputs import apply_server_url, resolve_server_url  # noqa: E402
 from builder.pipeline import TOTAL_BUDGET_S, make_slot, run_build  # noqa: E402
+from builder.tee import capture_console  # noqa: E402
+from builder.trace import format_run_summary  # noqa: E402
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -118,6 +123,26 @@ def _trace_is_degraded(run_dirs: list[Path]) -> bool:
 def main(argv: list[str] | None = None) -> int:
     """Run one build and return its exit code."""
     args = parse_args(argv)
+    t0 = time.monotonic()
+    stack = contextlib.ExitStack()
+
+    def on_run_dir(run_dir: Path) -> None:
+        # capture the console from the moment the run folder exists; trace.log embeds it
+        stack.enter_context(capture_console(run_dir / "console.log"))
+        _print_run_dir(run_dir)
+
+    with stack:
+        code = _run(args, on_run_dir)
+        if _last_run_dir:
+            print("RUN SUMMARY", flush=True)
+            for line in format_run_summary(
+                _last_run_dir[-1], time.monotonic() - t0, code, "ok" if code == 0 else "degraded"
+            ):
+                print(f"  {line}", flush=True)
+    return code
+
+
+def _run(args: argparse.Namespace, on_run_dir: Callable[[Path], None]) -> int:
     code = run_build(
         root=ROOT,
         briefs=[Path(b) for b in args.briefs],
@@ -125,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         slot=args.slot,
         dry=args.dry,
         cases=Path(args.cases) if args.cases is not None else None,
-        on_run_dir=_print_run_dir,
+        on_run_dir=on_run_dir,
         spec_path=Path(args.spec) if args.spec is not None else None,
         budget_s=args.budget,
         server_url=args.server_url,

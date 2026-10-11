@@ -14,7 +14,7 @@ nothing from a brief is hardcoded here. Two tiers:
 Tool names (from the tool API) and every property name of the spec schema are generic vocabulary and
 are never tokens. Other generic hits go in scripts/contamination_allow.json, each with a reason;
 an entry that no longer matches anything fails the check.
-Scanned: builder/, build.py, scripts/ (without __pycache__, this script, the allowlist and
+Scanned: builder/, build.py, scripts/, mock/ (without mock/dist, node_modules, __pycache__, this script, the allowlist and
 scripts/spikes/, which --include-spikes reports as notes only).
 The concurrently written *_variant_* files are never read.
 """
@@ -52,10 +52,11 @@ DEFAULT_ROOTS: tuple[Path, ...] = (
     REPO_ROOT / "builder",
     REPO_ROOT / "build.py",
     REPO_ROOT / "scripts",
+    REPO_ROOT / "mock",
 )
 
 SPIKES_DIR_NAME = "spikes"
-SKIP_DIR_NAMES: frozenset[str] = frozenset({"__pycache__"})
+SKIP_DIR_NAMES: frozenset[str] = frozenset({"__pycache__", "dist", "node_modules", ".wrangler"})
 MAX_ADVISORY_LINES = 20
 
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?")
@@ -381,7 +382,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Command line of the check."""
     p = argparse.ArgumentParser(
         prog="check_contamination.py",
-        description="Fail when brief values appear in builder/, build.py or scripts/.",
+        description="Fail when brief values appear in builder/, build.py, scripts/ or mock/.",
     )
     p.add_argument("--list-tokens", action="store_true", help="print the derived tokens and exit")
     p.add_argument("--include-spikes", action="store_true", help="also scan scripts/spikes/ (notes only)")

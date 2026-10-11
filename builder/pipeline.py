@@ -410,7 +410,8 @@ def stage_save(ctx: BuildContext) -> str:
     )
     ctx.results["saved"] = info
     ctx.trace.log_artifact(
-        "saved", str(info["workflow_id"]), str(info.get("agent_id")), version=info.get("version")
+        "saved", str(info["workflow_id"]), str(info.get("agent_id")), version=info.get("version"),
+        note=f"slot={ctx.slot}",
     )
     return f"workflow_id={info['workflow_id']}"
 
@@ -452,6 +453,10 @@ def stage_export(ctx: BuildContext) -> str:
     info = _saved(ctx)
     path = _freya(ctx).export_workflow(
         str(info["workflow_id"]), str(ctx.run_dir / f"{ctx.slot}.workflow.json")
+    )
+    ctx.trace.log_artifact(
+        "exported", str(info["workflow_id"]), str(info.get("agent_id")), version=info.get("version"),
+        note=f"slot={ctx.slot} path={path}",
     )
     return f"exported to {path}"
 
@@ -562,7 +567,12 @@ def stage_online_test(ctx: BuildContext) -> str:
         ctx.workflow = out.live_workflow
         _write_json(ctx.run_dir / "workflow.json", out.live_workflow)
         try:
-            _freya(ctx).export_workflow(str(info["workflow_id"]), str(ctx.run_dir / f"{ctx.slot}.workflow.json"))
+            exported = _freya(ctx).export_workflow(
+                str(info["workflow_id"]), str(ctx.run_dir / f"{ctx.slot}.workflow.json"))
+            sv = ctx.results.get("saved") or {}
+            ctx.trace.log_artifact(
+                "exported", str(info["workflow_id"]), str(info.get("agent_id")), version=sv.get("version"),
+                note=f"slot={ctx.slot} path={exported}")
         except Exception as e:  # noqa: BLE001 - the saved agent is what counts; the export is a copy
             ctx.trace.warn(f"online_test: re-export failed: {type(e).__name__}: {e}")
     scored = [r for i, r in out.results.items() if not r.infra and not (i in out.classes and out.classes[i].klass == "expectation")]
@@ -579,6 +589,11 @@ def stage_online_test(ctx: BuildContext) -> str:
         "seconds": round(time.monotonic() - t0, 1), "stage_budget_s": STAGE_BUDGETS["online_test"],
     }
     _write_json(ctx.run_dir / "online_test.json", report)
+    for cid, r in out.results.items():
+        ctx.trace.log_test(
+            "online_case", ctx.slot,
+            f"case {cid} kind {r.kind} ledger={r.ledger_pass} conversation={r.conversation_pass} "
+            f"repairs={len(out.repairs)}")
     ctx.trace.log_test("online", ctx.slot, f"{out.decision.get('kept')} workflow live", passed, len(scored),
                        details=f"{len(out.repairs)} repair(s) tried, {report['excluded']} case(s) excluded")
     return (f"{passed}/{len(scored)} cases pass, {len(out.repairs)} repair(s) tried, kept {out.decision.get('kept')}, "
