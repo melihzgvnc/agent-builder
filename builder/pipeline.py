@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from builder import health, readback, selfcheck
+from builder import health, online_cases, online_repair, online_runner, readback, selfcheck
 from builder.compiler import compile_fallback, compile_workflow, emergency_workflow
 from builder.extract import stage_extract
 from builder.freya_extra import get_workflow
@@ -119,6 +119,7 @@ class BuildContext:
     results: dict[str, object] = field(default_factory=dict)
     deadline: float | None = None  # time.monotonic() value at which the total budget ends
     extract_budget_s: float | None = None
+    bank: Any = None  # bank mock adapter for the online test (tests inject a fake)
 
 
 class StageSkipped(Exception):
@@ -417,6 +418,7 @@ def stage_smoke_test(ctx: BuildContext) -> str:
     if not res["ok"]:
         ctx.trace.warn(f"model backend unhealthy: {res['error']}")
         ctx.trace.log_test("smoke", ctx.slot, "model backend unhealthy, skipped")
+        ctx.results["backend_unhealthy"] = True
         raise StageSkipped("model backend unhealthy")
     ctx.trace.log_test("smoke", ctx.slot, "ok", details=f"{res['seconds']:.1f}s")
     return f"chat answered in {res['seconds']:.1f}s"
@@ -431,8 +433,116 @@ def stage_export(ctx: BuildContext) -> str:
     return f"exported to {path}"
 
 
+def _cases_file(ctx: BuildContext) -> Path | None:
+    """The carrier accounts for the online test: --cases, else <root>/public-test-set.json."""
+    for p in (ctx.cases, ctx.root / "public-test-set.json"):
+        if p is not None and Path(p).is_file():
+            return Path(p)
+    return None
+
+
+def _online_recompile(ctx: BuildContext) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
+    """Gate for a spec-level repair: recompile a copy of the spec, accept only a clean, not worse workflow."""
+    sc = ctx.results.get("selfcheck")
+    before = len(sc.get("failed", [])) if isinstance(sc, dict) else 0
+
+    def recompile(fixed: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            spec_obj = load_spec(fixed)
+            workflow, report = compile_workflow(spec_obj, ctx.openapi_doc or {})
+            if any(f.severity == "error" for f in lint(workflow)):
+                return None
+            again = selfcheck.run_selfchecks(workflow, spec_to_dict(spec_obj), ctx.openapi_doc or {}, report.context)
+            return workflow if len(again.failed) <= before else None
+        except Exception:  # noqa: BLE001 - a repair that cannot be built is simply not used
+            return None
+
+    return recompile
+
+
 def stage_online_test(ctx: BuildContext) -> str:
-    raise NotImplementedStage()
+    """Generate cases from the spec, run them against the saved agent, repair what is deterministic.
+
+    Every network call goes through the budget guard; the live agent is never left worse than the
+    saved workflow (a repair is kept only when strictly better, else the best version is re-saved).
+    """
+    t0 = time.monotonic()
+    if ctx.results.get("fallback_workflow"):
+        raise StageSkipped("fallback workflow: there is no spec to derive test cases from")
+    if ctx.spec is None:
+        raise StageSkipped("no spec")
+    info = _saved(ctx)
+    if ctx.results.get("backend_unhealthy"):
+        raise StageSkipped("model backend unhealthy")
+    path = _cases_file(ctx)
+    carriers = online_cases.load_carriers(path) if path is not None else []
+    if not carriers:
+        _degrade(ctx, "online_test skipped: no carrier accounts (give --cases or put public-test-set.json in the project root)")
+        raise StageSkipped("no carrier accounts")
+    scoring = online_runner.load_scoring(require_key=ctx.bank is None)
+    if scoring is None:
+        _degrade(ctx, "online_test skipped: scoring tools or FREYA_BANK_TEAM_KEY missing")
+        raise StageSkipped("no scoring tools or bank key")
+    bank = ctx.bank if ctx.bank is not None else online_runner.HttpBank(scoring)
+    spec = spec_to_dict(ctx.spec_obj) if ctx.spec_obj is not None else ctx.spec
+    cases, skipped = online_cases.generate_cases(spec, carriers)
+    if not cases:
+        _degrade(ctx, "online_test skipped: the spec yields no test case (" + "; ".join(skipped)[:300] + ")")
+        raise StageSkipped("no test cases")
+    assert ctx.workflow is not None
+    baseline = ctx.workflow
+    client = _freya(ctx)
+    budget = online_runner.Budget(STAGE_BUDGETS["online_test"], ctx.deadline)
+    personas = ctx.root / ".personas.json"
+    agent_id = str(info.get("agent_id"))
+    saves: list[dict[str, Any]] = []
+
+    def run_batch(batch: list[online_cases.GenCase], reserve: float) -> list[online_runner.CaseResult]:
+        return online_runner.run_batch(client, bank, scoring, batch, agent_id, budget, reserve, personas)
+
+    def save(workflow: dict[str, Any]) -> Any:
+        if not budget.can_mutate():
+            raise RuntimeError("time budget exhausted before the save")
+        saved = client.save_workflow(ctx.slot, workflow, state_file=str(ctx.root / ".freya-agents.json"))
+        saves.append(saved)
+        return saved
+
+    out = online_repair.run_loop(
+        cases=cases, baseline=baseline, spec=spec, budget=budget, run_batch=run_batch, save=save,
+        recompile=_online_recompile(ctx), log=ctx.trace.warn,
+    )
+    for msg in out.degraded:
+        _degrade(ctx, f"online_test: {msg}")
+    for cid, cls in out.classes.items():
+        if cls.klass in ("hook", "closing", "expectation"):
+            ctx.trace.warn(f"online_test {cid} [{cls.klass}]: {cls.evidence}")
+    if saves:
+        ctx.results["saved"] = {**info, **saves[-1]}
+    if out.live_workflow is not baseline:
+        ctx.workflow = out.live_workflow
+        _write_json(ctx.run_dir / "workflow.json", out.live_workflow)
+        try:
+            _freya(ctx).export_workflow(str(info["workflow_id"]), str(ctx.run_dir / f"{ctx.slot}.workflow.json"))
+        except Exception as e:  # noqa: BLE001 - the saved agent is what counts; the export is a copy
+            ctx.trace.warn(f"online_test: re-export failed: {type(e).__name__}: {e}")
+    scored = [r for i, r in out.results.items() if not r.infra and not (i in out.classes and out.classes[i].klass == "expectation")]
+    passed = sum(1 for r in scored if r.passed or r.judge_noise)
+    report = {
+        "slot": ctx.slot, "carriers_file": str(path), "agent_id": agent_id,
+        "cases": [{"id": c.id, "kind": c.kind, "carrier": c.carrier_id, "title": c.title, "script": c.script,
+                   "expected": c.expected} for c in cases],
+        "skipped_kinds": skipped,
+        "rounds": out.rounds, "repairs_tried": out.repairs, "decision": out.decision,
+        "classes": {i: {"class": c.klass, "evidence": c.evidence} for i, c in out.classes.items()},
+        "degraded": out.degraded, "passed": passed, "scored": len(scored),
+        "excluded": len(out.results) - len(scored),
+        "seconds": round(time.monotonic() - t0, 1), "stage_budget_s": STAGE_BUDGETS["online_test"],
+    }
+    _write_json(ctx.run_dir / "online_test.json", report)
+    ctx.trace.log_test("online", ctx.slot, f"{out.decision.get('kept')} workflow live", passed, len(scored),
+                       details=f"{len(out.repairs)} repair(s) tried, {report['excluded']} case(s) excluded")
+    return (f"{passed}/{len(scored)} cases pass, {len(out.repairs)} repair(s) tried, kept {out.decision.get('kept')}, "
+            f"{report['excluded']} excluded, {len(out.degraded)} degraded note(s)")
 
 
 DEFAULT_STAGES: dict[str, StageFn] = {
@@ -457,7 +567,7 @@ def describe_input(ctx: BuildContext, name: str) -> str:
         return f"spec={ctx.spec_path}"
     if name in ("load_inputs", "extract_spec"):
         return f"briefs={[str(b) for b in ctx.briefs]} openapi={ctx.openapi_path}"
-    if name in ("read_back", "export", "smoke_test"):
+    if name in ("read_back", "export", "smoke_test", "online_test"):
         saved = ctx.results.get("saved")
         wid = saved.get("workflow_id") if isinstance(saved, dict) else None
         return f"workflow_id={wid}"
@@ -659,6 +769,7 @@ def run_build(
     client: Any = None,
     budget_s: float = TOTAL_BUDGET_S,
     stage_timeouts: dict[str, float] | None = None,
+    bank: Any = None,
 ) -> int:
     """Run every stage in STAGE_ORDER for one build. Returns the process exit code.
 
@@ -698,6 +809,7 @@ def run_build(
             trace=trace,
             spec_path=Path(spec_path) if spec_path is not None else None,
             client=client,
+            bank=bank,
             deadline=time.monotonic() + budget_s,
         )
         overrides: dict[str, StageFn] = {"extract_spec": stage_spec_file} if spec_path is not None else {}

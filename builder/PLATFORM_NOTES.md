@@ -71,3 +71,12 @@ Status per item: confirmed / refuted / partial.
 ### Findings that are bugs in the built agent (not platform behaviour)
 - Callback before verification: the calendar variables (`callback_dates`) are written by the facts node, which runs only after the account lookup. A third-party caller never reaches it, so the callback pre-hook saw an empty list, blanked every date/time, and the bank rejected both tries ("Allowed dates: ." in the model's text). Needs the calendar computed before the first conversation node can offer a callback (builder change, not yet made).
 - `transition_to_*` tool names and a model that says "verified" after one passed question: model behaviour, not platform.
+
+## Online test stage and live variant runs (facts seen in saved traces and results)
+- The bank mock is closed-world: practice sessions accept only the case ids of the cases file; custom accounts cannot be created. Generated cases therefore borrow carrier accounts from the cases file (`--cases` or `<root>/public-test-set.json`) and only the customer script and expected result are generated. The stage skips with a DEGRADED line when no carriers, no scoring tools or no bank key exist.
+- The mock applies its own rules to its accounts. A spec number that differs from the mock's shows up as class `expectation` and is excluded from the score.
+- The chat route and `GET /simulations` returned 504 and 503 several times during the variant runs (smoke probe timeouts at 30 s, a 503 "API key validation temporarily unavailable", a PUT 504 on a rebuild). Nothing on these routes is retried; the stage marks the case `infra` and stops testing. Waiting a few minutes and rebuilding from the saved spec (`--spec`) worked.
+- `freya.run_simulation` has no timeout. The stage runs it in a daemon thread; an abandoned simulation can keep the workspace busy for the next run.
+- The platform default text substitution rewrites "$" to "dollars" with no space in chat transcripts ("dollars420.00"). It is not emitted by the compiler.
+- Ledger call argument key names (`args/request/input/body/params`) are read tolerantly; the real shape was not separately confirmed in these notes.
+- Model variance on single cases is real: one variant case failed once and passed on the same compiled workflow in the next run. One run is a hint, not proof.
