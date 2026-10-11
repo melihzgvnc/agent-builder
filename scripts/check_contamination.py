@@ -37,7 +37,10 @@ SCRIPT_PATH: Path = Path(__file__).resolve()
 DEFAULT_BRIEFS: tuple[Path, ...] = (
     REPO_ROOT / "briefs" / "brief-a.md",
     REPO_ROOT / "briefs" / "brief-b.md",
-)
+) + tuple(p for p in (
+    REPO_ROOT / "rehearsal" / "brief-1.md",
+    REPO_ROOT / "rehearsal" / "brief-2.md",
+) if p.is_file())
 DEFAULT_FIXTURES: tuple[Path, ...] = (
     REPO_ROOT / "tests" / "fixtures" / "spec_brief_a.json",
     REPO_ROOT / "tests" / "fixtures" / "spec_brief_ab.json",

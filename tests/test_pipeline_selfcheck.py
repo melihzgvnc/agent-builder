@@ -138,8 +138,8 @@ def test_a_really_broken_hook_is_found_and_repaired(tmp_path: Path, monkeypatch:
         workflow, report = REAL_COMPILE(spec, openapi)
         for _path, tool, _where in lint.iter_tools(workflow):
             if tool.get("function", {}).get("name") == "schedule_callback":
-                assert "mins < HS" in tool["pre_process_code"]
-                tool["pre_process_code"] = tool["pre_process_code"].replace("mins < HS", "mins < HS - 120", 1)
+                assert "mins < hs" in tool["pre_process_code"]
+                tool["pre_process_code"] = tool["pre_process_code"].replace("mins < hs", "mins < hs - 120", 1)
         return workflow, report
 
     monkeypatch.setattr(pipeline, "compile_workflow", broken)

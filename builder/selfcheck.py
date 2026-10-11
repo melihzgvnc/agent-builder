@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import datetime
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -150,6 +151,12 @@ def _code_sources(workflow: dict) -> list[tuple[str, str, bool]]:
     return out
 
 
+def _chunk(text: str) -> str:
+    """Longest piece of a text without call-variable slots, lower case (slots are filled differently)."""
+    parts = re.split(r"\{+\w+\}+", text)
+    return max(parts, key=len).strip().lower() if parts else ""
+
+
 # ---------------------------------------------------------------------------------------------
 # The scenario runner
 # ---------------------------------------------------------------------------------------------
@@ -181,6 +188,9 @@ class _Runner:
         self.facts_src = self._facts_source()
         self.floor_fields = self._floor_field_names()
         self.types: list[str] = [t for t in _dict(self.am.get("floor_fields")) if isinstance(t, str)]
+        for t in _dict(self.am.get("floor_percent")):
+            if isinstance(t, str) and t not in self.types:
+                self.types.append(t)
         self.bands = self._band_cases()
         self.today = self._pick_today()
         start, end = _minutes(self.cw.get("hour_start")), _minutes(self.cw.get("hour_end"))
@@ -303,6 +313,12 @@ class _Runner:
         prod[str(self.am["full_amount_field"])] = FULL_AMOUNT
         for i, name in enumerate(self.floor_fields):
             prod[name] = FLOOR_BASE + FLOOR_STEP * i
+        for rule in list(_dict(self.am.get("floor_percent")).values()) + [self.am.get("floor_default_percent")]:
+            of_field = _dict(rule).get("of_field")
+            if isinstance(of_field, str) and of_field and of_field not in prod:
+                prod[of_field] = FULL_AMOUNT
+        if self.af.get("due_date"):
+            prod[str(self.af["due_date"])] = _iso(self.today - datetime.timedelta(days=days_late))
         return prod
 
     def products_for(self, count: int) -> list[dict[str, Any]]:
@@ -354,7 +370,7 @@ class _Runner:
             s = f"{pre}p{i}_"
             days = prod.get(str(self.af.get("days_late")))
             band = engine.band_for(days, self.sd)
-            dl = engine.deadline_for_days_late(days, today, self.sd)
+            dl = engine.product_deadline(prod, today, self.sd, self.cal)
             if dl is not None and (latest is None or dl > latest):
                 latest = dl
             if v.get(s + "deadline") != _iso(dl):
@@ -449,14 +465,12 @@ class _Runner:
     # ---- promise date -----------------------------------------------------------------------
 
     def expected_promise_date(self, asked: datetime.date, deadline: datetime.date) -> str | None:
+        """The date the pre-hook must send: the asked date when the engine accepts it, else '' (rejected)."""
         r = engine.check_promise_date(_iso(asked), self.today, deadline, self.cal)
-        status = r["status"]
-        if status in ("ok", "moved_to_next_business_day"):
-            return str(r["date"])
-        if status == "after_deadline":
-            return _iso(engine.previous_business_day_on_or_before(deadline, self.cal))
-        if status == "past":
-            return _iso(engine.next_business_day_on_or_after(self.today, self.cal))
+        if r["status"] == "ok":
+            return _iso(asked)
+        if r["status"] in ("moved_to_next_business_day", "after_deadline", "past"):
+            return ""
         return None
 
     def promise_dates(self, deadline: datetime.date) -> list[tuple[str, datetime.date]]:
@@ -489,11 +503,11 @@ class _Runner:
             return
         f = _dict(self.fields.get(compiler.ROLE_PROMISE))
         for name, days in self.bands:
-            deadline = engine.deadline_for_days_late(days, self.today, self.sd)
+            prod = self.make_product("p1", self.types[0] if self.types else None, days)
+            deadline = engine.product_deadline(prod, self.today, self.sd, self.cal)
             if deadline is None:
                 self.skip(f"promise.date[{name}]: the band has no deadline")
                 continue
-            prod = self.make_product("p1", self.types[0] if self.types else None, days)
             for label, asked in self.promise_dates(deadline):
                 def one(asked: datetime.date = asked) -> tuple[bool, str]:
                     want = self.expected_promise_date(asked, deadline)
@@ -506,7 +520,10 @@ class _Runner:
                     bad = []
                     if out.get(f["date"]) != want:
                         bad.append(f"date {out.get(f['date'])!r} for asked {_iso(asked)} (deadline {_iso(deadline)}), want {want!r}")
-                    if out.get(f["product"]) != "p1":
+                    if want == "":
+                        if v.get("promise_guard") != "rejected" or out.get(f["product"]) != "":
+                            bad.append(f"a rejected date left guard {v.get('promise_guard')!r}, product id {out.get(f['product'])!r}")
+                    elif out.get(f["product"]) != "p1":
                         bad.append(f"product id {out.get(f['product'])!r} was not forced to p1")
                     return not bad, "; ".join(bad)
                 self.attempt(f"promise.date[{name},{label}]", FEATURE_PROMISE, one)
@@ -556,12 +573,10 @@ class _Runner:
             for label, amount in asked:
                 def one(amount: float = amount) -> tuple[bool, str]:
                     cls = engine.classify_amount(amount, full, floor)
-                    if cls in ("full", "above_full"):
-                        want: float | None = full
-                    elif cls == "below_floor":
-                        want = floor
-                    elif cls == "in_range":
-                        want = amount
+                    if cls in ("full", "in_range"):
+                        want: float | None = amount
+                    elif cls in ("above_full", "below_floor"):
+                        want = 0
                     else:
                         raise _Unusable(f"the engine classifies {amount} as {cls}")
                     v = self.facts([prod], self.now_iso())
@@ -570,7 +585,9 @@ class _Runner:
                     self.watch(f"amount[{ptype},{label}]", v, out)
                     got = out.get(f["amount"])
                     ok = engine.to_number(got) is not None and abs(float(got) - float(want or 0)) < 0.005
-                    return ok, f"asked {amount} (full {full}, floor {floor}): sent {got!r}, want {want!r}"
+                    if want == 0:
+                        ok = ok and v.get("promise_guard") == "rejected"
+                    return ok, f"asked {amount} (full {full}, floor {floor}): sent {got!r}, want {want!r}, guard {v.get('promise_guard')!r}"
                 self.attempt(f"amount[{ptype},{label}]", FEATURE_AMOUNT, one)
 
     # ---- callback ---------------------------------------------------------------------------
@@ -579,13 +596,15 @@ class _Runner:
         one = datetime.timedelta(days=1)
         allowed = engine.allowed_callback_dates(day, self.sd, self.cal)
         last = allowed[-1] if allowed else day
-        mid = _hhmm(self.now_min + 60 if self.hs is None else (self.hs + (self.he or self.hs)) // 2)
+        window = engine.callback_window_for(last, self.sd)
+        hs, he = _minutes(window.get("hour_start")), _minutes(window.get("hour_end"))
+        mid = _hhmm(self.now_min + 60 if hs is None else (hs + (he or hs)) // 2)
         cases: list[tuple[str, datetime.date, str]] = [("inside", last, mid)]
-        if self.hs is not None:
-            cases += [("start_edge", last, _hhmm(self.hs)), ("before_start", last, _hhmm(self.hs - 1))]
-        if self.he is not None:
-            cases += [("end_edge", last, _hhmm(self.he)), ("before_end", last, _hhmm(self.he - 1)),
-                      ("after_end", last, _hhmm(self.he + 1))]
+        if hs is not None:
+            cases += [("start_edge", last, _hhmm(hs)), ("before_start", last, _hhmm(hs - 1))]
+        if he is not None:
+            cases += [("end_edge", last, _hhmm(he)), ("before_end", last, _hhmm(he - 1)),
+                      ("after_end", last, _hhmm(he + 1))]
         cases += [
             ("beyond_days", engine.next_business_day_after(last, self.cal), mid),
             ("next_calendar_day", day + one, mid),
@@ -864,6 +883,78 @@ class _Runner:
             except Exception as e:  # noqa: BLE001 - SnippetError / ValueError describe the broken rule
                 bad.append(f"{label}: {e}")
         self.add("structure.code_sources", not bad, FEATURE_STRUCTURE, "; ".join(bad[:5]))
+        self.check_opening_order()
+        self.check_closing()
+
+    def check_opening_order(self) -> None:
+        """The mandated first sentence comes before the confirmation question in the first message."""
+        op = _dict(self.sd.get("opening"))
+        fs = _dict(op.get("first_sentence"))
+        template, items = fs.get("template"), [str(x) for x in fs.get("must_include") or []]
+        question = op.get("confirmation_question")
+        if not template and not items:
+            return
+        node = _dict(_dict(self.wf.get("nodes")).get(compiler.NODE_IDENTITY))
+        on_enter = _dict(node.get("on_enter"))
+        if template:
+            text = str(on_enter.get("text") or "") if on_enter.get("type") == "tts" else ""
+            low = text.lower()
+            first = low.find(_chunk(str(template)))
+            asked = low.find(_chunk(str(question))) if question else -1
+            ok = first >= 0 and (asked < 0 or first < asked)
+            for item in items:
+                at = low.find(item.lower())
+                ok = ok and (at < 0 or asked < 0 or at < asked)
+            self.add("opening.order", ok, FEATURE_STRUCTURE, "the first message does not start with the first sentence before the question")
+            return
+        task = str(node.get("task_message") or "")
+        head = task.split("\n\n", 1)[0].lower()
+        asked = head.find(_chunk(str(question))) if question else -1
+        positions = [head.find(item.lower()) for item in items]
+        ok = on_enter.get("type") == "llm" and all(p >= 0 for p in positions) and (asked < 0 or max(positions) < asked)
+        self.add("opening.order", ok, FEATURE_STRUCTURE, "the identity task does not start with the first-message directive")
+
+    def expected_farewell(self) -> str:
+        g = _dict(_dict(self.sd.get("closing")).get("goodbye_before_close"))
+        if g.get("text"):
+            return str(g["text"])
+        lang = str(_dict(self.sd.get("meta")).get("language") or "")
+        if g and g.get("required") is not False and lang.lower().startswith("en"):
+            return compiler.DEFAULT_FAREWELL_EN
+        return ""
+
+    def check_closing(self) -> None:
+        nodes = _dict(self.wf.get("nodes"))
+        if compiler.NODE_NEGOTIATE not in nodes:
+            return
+        farewell = self.expected_farewell()
+        success = str(_dict(self.sd.get("promise_rules")).get("success_sentence") or "")
+        if farewell:
+            silent = []
+            for name, node in nodes.items():
+                if _dict(node).get("node_type") != "end_call":
+                    continue
+                props = _dict(_dict(_dict(_dict(node).get("terminal")).get("function")).get("parameters")).get("properties")
+                spoken = str(_dict(_dict(props).get("spoken_message")).get("default") or "")
+                if farewell not in spoken:
+                    silent.append(name)
+            self.add("closing.end_nodes_speak", not silent, FEATURE_STRUCTURE, "end nodes without the farewell: " + ", ".join(silent[:5]))
+        if farewell or success:
+            trans = _dict(nodes.get(compiler.NODE_NEGOTIATE)).get("transitions") or []
+            auto_at = next((i for i, t in enumerate(trans) if "auto_close" in json.dumps(_dict(t).get("condition"))), -1)
+            first_tool = next((i for i, t in enumerate(trans) if _dict(t).get("is_tool_call")), len(trans))
+            hook_ok = all(
+                "auto_close" in json.dumps(self.tool(role))
+                for role in (self.ctx_role("create_promise"),) if role
+            )
+            self.add("closing.auto_close", 0 <= auto_at < first_tool and hook_ok, FEATURE_STRUCTURE,
+                     "negotiate has no auto_close transition before the tool transitions, or the promise post-hook never sets it")
+        wrap = _dict(nodes.get(compiler.NODE_WRAPUP))
+        self.add("closing.wrapup_cap", bool(wrap.get("max_node_turns")) and wrap.get("max_turn_transition") == compiler.NODE_FINALIZE,
+                 FEATURE_STRUCTURE, "the wrapup node has no turn cap that leads to finalize")
+
+    def ctx_role(self, role: str) -> str | None:
+        return role if self.tool(role) is not None else None
 
     def check_no_none(self) -> None:
         self.add("no_none.runtime", not self.none_hits, FEATURE_NO_NONE,

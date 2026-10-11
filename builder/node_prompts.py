@@ -8,10 +8,11 @@ The compiler passes a PromptCtx with the names it chose (tools, exit transitions
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import re
 from dataclasses import dataclass, field
 
-from builder import prompts
+from builder import engine, prompts
 from builder.spec import Action, Intent, OutcomeRef, PolicySpec, spec_to_dict
 from builder.tools_gen import placeholder
 
@@ -27,6 +28,7 @@ DATE_RULE_TEXT: dict[str, str] = {
     "deadline": "the product's latest promise date",
     "today": "today",
     "next_business_day": "the next business day",
+    "business_days_after_today": "the N-th business day after today",
 }
 AMOUNT_RULE_TEXT: dict[str, str] = {
     "full_or_floor_if_too_much": (
@@ -57,6 +59,9 @@ class PromptCtx:
     uses_notes: bool = False
     n_products: int = 1
     note_reasons: list[str] = field(default_factory=list)
+    farewell_auto: bool = False  # the goodbye is spoken by the end node, not by the model
+    auto_close: bool = False  # the call ends by itself once every product is handled
+    auto_drop_texts: tuple[str, ...] = ()  # mandated texts the end nodes already speak
 
 
 # ---------------------------------------------------------------------------------------------
@@ -114,6 +119,13 @@ def _goodbye(spec: PolicySpec) -> str:
 def _say_goodbye(spec: PolicySpec) -> str:
     text = _goodbye(spec)
     return "say the goodbye text (" + _quote(text) + ")" if text else "say goodbye"
+
+
+def _close_with(spec: PolicySpec, ctx: PromptCtx, tool: str) -> str:
+    """'call <tool>', preceded by the goodbye instruction only when the model has to say it."""
+    if ctx.farewell_auto:
+        return "call " + tool
+    return _say_goodbye(spec) + " and call " + tool
 
 
 def _sentence(text: str) -> str:
@@ -190,6 +202,35 @@ def system_prompt(spec: PolicySpec) -> str:
     return " ".join(lines)
 
 
+def opening_mode(spec: PolicySpec) -> str:
+    """'fixed' (template said as the fixed first line), 'composed' (only the items the first
+    sentence must include are known: the model composes it), 'question_only' or 'none'."""
+    op = spec.opening
+    if op is None:
+        return "none"
+    fs = op.first_sentence
+    if fs is not None and fs.template:
+        return "fixed"
+    if fs is not None and fs.must_include:
+        return "composed"
+    return "question_only" if op.confirmation_question else "none"
+
+
+def opening_directive(spec: PolicySpec) -> str:
+    """First-message directive for the 'composed' mode ('' in the other modes)."""
+    if opening_mode(spec) != "composed":
+        return ""
+    op = spec.opening
+    items = " | ".join(_fill(x, spec) for x in op.first_sentence.must_include)
+    text = (
+        "Your very first message, before anything else (before any question or answer, even if the customer "
+        "speaks first): one sentence that says all of: " + items + "."
+    )
+    if op.confirmation_question:
+        text += " In the same message then ask exactly: " + _quote(_fill(op.confirmation_question, spec)) + "."
+    return text + " Say nothing else before it."
+
+
 def opening_text(spec: PolicySpec) -> str:
     """The fixed first line: first sentence plus the confirmation question ('' when neither)."""
     op = spec.opening
@@ -219,11 +260,11 @@ def _exit_line(spec: PolicySpec, ctx: PromptCtx, outcome: str, reason: str | Non
         return (
             "for the current product call " + note_tool + " with reason " + _quote(note)
             + "; do the same for every product that has no promise yet; when all products are handled, "
-            + _say_goodbye(spec) + " and call " + ctx.finalize_transition
+            + _close_with(spec, ctx, ctx.finalize_transition)
         )
     exit_tool = ctx.exits.get((outcome, reason or ""))
     if exit_tool:
-        return _say_goodbye(spec) + ", then call " + exit_tool
+        return _close_with(spec, ctx, exit_tool)
     return "end the call as the instructions say"
 
 
@@ -271,8 +312,7 @@ def render_actions(actions: list[Action], ctx: PromptCtx, spec: PolicySpec, dept
                 qf = ctx.fields.get("transfer_to_agent", {}).get("queue", "queue")
                 out.append(
                     pad + "Call " + tool + " with " + qf + " " + _quote(a.queue or "")
-                    + ". After the tool result says ok, " + _say_goodbye(spec)
-                    + " and call " + ctx.finalize_transition + "."
+                    + ". After the tool result says ok, " + _close_with(spec, ctx, ctx.finalize_transition) + "."
                 )
                 skip_close = True
             else:
@@ -329,12 +369,14 @@ def _stage_strings(spec: PolicySpec, stage: str) -> list[str]:
     return _strings(parts)
 
 
-def _mandated(spec: PolicySpec, stage: str) -> str:
+def _mandated(spec: PolicySpec, stage: str, drop: tuple[str, ...] = ()) -> str:
     """Mandated sentences that occur in this stage's spec sections; unmatched ones go to negotiate."""
     mine = _stage_strings(spec, stage)
     other = _stage_strings(spec, STAGE_NEGOTIATE if stage == STAGE_IDENTITY else STAGE_IDENTITY)
     picked = []
     for m in spec.mandated_sentences:
+        if m.text in drop:
+            continue
         here = any(m.text in s for s in mine)
         there = any(m.text in s for s in other)
         if here or (stage == STAGE_NEGOTIATE and not there):
@@ -382,10 +424,15 @@ def _opening_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
         text = "Ask the confirmation question at most " + _times(op.max_confirmation_asks) + "."
         unclear = _exit_call(ctx, op.on_unclear)
         if unclear:
-            text += " If it is still unclear, " + _say_goodbye(spec) + " and call " + unclear + "."
+            text += " If it is still unclear, " + _close_with(spec, ctx, unclear) + "."
         lines.append(text)
+    if op.first_sentence is not None and (op.first_sentence.template or op.first_sentence.must_include):
+        lines.append(
+            "The mandated first sentence always comes before any other utterance, whatever the customer says first; "
+            "answer a customer question only after it."
+        )
     if op.answer_question_first:
-        lines.append("If the customer asks a question, answer it first, then ask the confirmation question again.")
+        lines.append("After the first sentence, if the customer asks a question, answer it, then ask the confirmation question again.")
     if op.ai_question_answer:
         lines.append("If asked whether you are an AI or a robot, say: " + _quote(_fill(op.ai_question_answer, spec)))
     if op.scam_question_answer:
@@ -426,8 +473,14 @@ def _third_party_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
             weekend = ", ".join(spec.calendar.weekend_days) if spec.calendar is not None else ""
             lines.append(
                 "The current date and time is " + placeholder(now_var) + " (YYYY-MM-DDTHH:MM). Work out the dates from it, never from any other clock."
-                + (" Business days exclude " + weekend + (" and the holidays " + hol if hol else "") + "." if weekend or hol else "")
             )
+            if weekend or hol:
+                lines.append(business_week_text(spec))
+            if hol:
+                lines.append("Holidays (never business days): " + ", ".join(holidays_with_weekdays(spec)) + ".")
+            words = callback_hours_words(spec)
+            if words:
+                lines.append(words)
         if cb_tool:
             f = ctx.fields.get("schedule_callback", {})
             lines.append(
@@ -441,15 +494,15 @@ def _third_party_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
             if ctx.callback_exit:
                 lines.append(
                     "When the tool result says the callback is recorded, tell the contact, "
-                    + _say_goodbye(spec) + " and call " + ctx.callback_exit + "."
+                    + _close_with(spec, ctx, ctx.callback_exit) + "."
                 )
             if ctx.no_time_exit:
                 lines.append(
-                    "If no valid time is found, " + _say_goodbye(spec) + " and call " + ctx.no_time_exit + "."
+                    "If no valid time is found, " + _close_with(spec, ctx, ctx.no_time_exit) + "."
                 )
     wrong = _exit_call(ctx, tp.on_not_customers_number)
     if wrong:
-        lines.append("If the person says this number is not the customer's, " + _say_goodbye(spec) + " and call " + wrong + ".")
+        lines.append("If the person says this number is not the customer's, " + _close_with(spec, ctx, wrong) + ".")
     dec = tp.on_customer_deceased
     if dec is not None:
         text = "If the person reports that the customer is deceased"
@@ -459,7 +512,7 @@ def _third_party_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
             text += " and ask nothing else"
         name = _exit_call(ctx, dec.outcome)
         if name:
-            text += ", then " + _say_goodbye(spec) + " and call " + name
+            text += ", then " + _close_with(spec, ctx, name)
         lines.append(text + ".")
     if tp.others_may_answer_security is False:
         lines.append("Another person may not answer the security questions.")
@@ -537,7 +590,7 @@ def _identity_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
             text += ". After " + str(dec.max_refusals) + " refusals"
             name = _exit_call(ctx, dec.outcome)
             if name:
-                text += ", " + _say_goodbye(spec) + " and call " + name
+                text += ", " + _close_with(spec, ctx, name)
         lines.append(text + ".")
     return lines
 
@@ -553,6 +606,7 @@ def identity_task(spec: PolicySpec, ctx: PromptCtx) -> str:
     third = _section("If the person is not the customer:", _third_party_lines(spec, ctx))
     return _join(
         [
+            opening_directive(spec),
             intro,
             opening,
             third,
@@ -563,6 +617,18 @@ def identity_task(spec: PolicySpec, ctx: PromptCtx) -> str:
             prompts.render_tool_rules(),
         ]
     )
+
+
+def wrapup_task(spec: PolicySpec, ctx: PromptCtx) -> str:
+    """Task message of the wrapup node: the last words of a call that does not end by itself."""
+    m = spec.meta
+    text = (
+        "You are " + m.agent_identity + ". Everything for this call is done. In one short sentence tell the customer "
+        "the result (for a transfer: that they are being connected); do not offer anything new and do not discuss the account."
+    )
+    if ctx.farewell_auto:
+        text += " The goodbye is spoken automatically; do not say it."
+    return text + " Then " + _close_with(spec, ctx, ctx.finalize_transition) + "."
 
 
 # ---------------------------------------------------------------------------------------------
@@ -656,6 +722,59 @@ def _amount_lines(spec: PolicySpec) -> list[str]:
     return lines
 
 
+def _weekday_label(name: str) -> str:
+    return name.capitalize()
+
+
+def business_week_text(spec: PolicySpec) -> str:
+    """'Business days are <names>; <names> are never business days.' from the spec calendar (never Monday-Friday by assumption)."""
+    cal = spec.calendar
+    if cal is None:
+        return ""
+    names = list(engine.WEEKDAYS)
+    start = names.index(cal.week_starts_on) if cal.week_starts_on in names else 0
+    ordered = names[start:] + names[:start]
+    weekend = [d for d in ordered if d in cal.weekend_days]
+    working = [d for d in ordered if d not in cal.weekend_days]
+    if not weekend:
+        return "Business days are " + ", ".join(_weekday_label(d) for d in working) + " (minus the listed holidays)."
+    return (
+        "Business days are " + ", ".join(_weekday_label(d) for d in working) + "; "
+        + ", ".join(_weekday_label(d) for d in weekend) + " are never business days."
+    )
+
+
+def holidays_with_weekdays(spec: PolicySpec) -> list[str]:
+    """Holidays as '<Weekday> <ISO date>', the weekday computed from the date."""
+    out: list[str] = []
+    cal = spec.calendar
+    for iso in (cal.holidays if cal is not None else []):
+        try:
+            d = datetime.date.fromisoformat(iso)
+        except ValueError:
+            out.append(iso)
+            continue
+        out.append(_weekday_label(engine.WEEKDAYS[d.weekday()]) + " " + iso)
+    return out
+
+
+def callback_hours_words(spec: PolicySpec) -> str:
+    """Per-weekday callback hours in words ('' when the spec has one window only)."""
+    tp = spec.third_party
+    cw = tp.callback_window if tp is not None else None
+    if cw is None or not cw.per_weekday:
+        return ""
+    parts = []
+    for w in cw.per_weekday:
+        text = ", ".join(_weekday_label(d) for d in w.weekdays) + ": " + w.hour_start + " to " + w.hour_end
+        if w.inclusive is True:
+            text += " (both times included)"
+        elif w.inclusive is False:
+            text += " (the end time is not included)"
+        parts.append(text)
+    return "On some weekdays the hours differ. Hours by weekday: " + "; ".join(parts) + ". Any other weekday uses the hours above."
+
+
 def _date_lines(spec: PolicySpec) -> list[str]:
     pr, cal = spec.promise_rules, spec.calendar
     lines = []
@@ -666,7 +785,7 @@ def _date_lines(spec: PolicySpec) -> list[str]:
             text += ", a business day"
         if pr.latest == "deadline":
             text += ", and not after the product's latest promise date"
-        lines.append(text + ". Business days exclude " + ", ".join(cal.weekend_days) + " and the holidays in the date facts.")
+        lines.append(text + ". " + business_week_text(spec) + " Holidays are listed in the date facts.")
         if pr.on_non_business_day == "offer_next_business_day":
             lines.append(
                 "If the customer names a day that is not a business day (a weekend day or a listed holiday), say so and offer the next business day "
@@ -680,6 +799,9 @@ def _date_lines(spec: PolicySpec) -> list[str]:
             lines.append("If the customer names a day after the latest promise date, do not accept it.")
         if pr.refusing_deadline_is_flat_refusal:
             lines.append("Refusing the latest promise date is a flat refusal.")
+    lines.append(
+        "Use only dates that appear in the lists of the date facts and the product facts; never work out a weekday yourself."
+    )
     ws = cal.weekday_semantics
     if ws is not None:
         if ws.next == "following_calendar_week":
@@ -715,7 +837,10 @@ def _persuasion_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
     if p.attempts:
         lines.append("The number of attempts for each product is 'persuasion attempts' in its product facts. The offer of attempt N is its 'attempt N offer' line; use exactly those values.")
     for a in sorted(p.attempts, key=lambda x: x.index):
-        text = "Attempt " + str(a.index) + ": date " + DATE_RULE_TEXT.get(a.date_rule, a.date_rule) + "; amount " + AMOUNT_RULE_TEXT.get(a.amount_rule, a.amount_rule)
+        date_text = DATE_RULE_TEXT.get(a.date_rule, a.date_rule)
+        if a.date_rule == "business_days_after_today" and a.date_n is not None:
+            date_text = "the " + str(a.date_n) + "-th business day after today"
+        text = "Attempt " + str(a.index) + ": date " + date_text + "; amount " + AMOUNT_RULE_TEXT.get(a.amount_rule, a.amount_rule)
         if a.bands:
             text += " (only for bands: " + ", ".join(a.bands) + ")"
         if a.note:
@@ -739,7 +864,7 @@ def _persuasion_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
         else:
             name = _exit_call(ctx, ex)
             if name:
-                lines.append("When the attempts are used up, " + _say_goodbye(spec) + " and call " + name + ".")
+                lines.append("When the attempts are used up, " + _close_with(spec, ctx, name) + ".")
     return lines
 
 
@@ -779,7 +904,7 @@ def _promise_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
             "If the tool call itself fails (an error or no result), nothing was recorded. Say nothing about it yet and call the tool again "
             "with exactly the same values, " + _times(pr.retries_on_failure) + " at most. Only after the retries also fail, give up."
         )
-    if pr.success_sentence:
+    if pr.success_sentence and not ctx.auto_close:
         lines.append("After the promise is recorded, say: " + _quote(_fill(pr.success_sentence, spec)))
     if pr.on_failure is not None and pr.on_failure.say:
         lines.append("If the promise cannot be recorded in the end, the call says " + _quote(_fill(pr.on_failure.say, spec)) + " by itself.")
@@ -814,6 +939,18 @@ def _multi_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
             lines.append("Notes are also needed when no product got a promise.")
     if mp.claim_on_one_product_continues:
         lines.append("If the customer makes a claim about one product, continue with the other products.")
+    if mp.notes is not None and note_tool and promise_tool and mp.notes.for_products_without_promise:
+        reasons = ", ".join(ctx.note_reasons or mp.notes.reasons)
+        lines.append("Work through the products one at a time, in the order of the product facts:")
+        lines.append("1) State the product.")
+        lines.append("2) If the customer agrees to pay it, read it back and call " + promise_tool + ".")
+        lines.append(
+            "3) Otherwise (refusal after the persuasion attempts for this product are used up, claim, hardship, dispute, already paid, failed promise) call " + note_tool
+            + " with the reason that fits, taken from this list: " + reasons + "."
+        )
+        lines.append("4) A claim on one product never ends the call.")
+        lines.append("5) The call ends only after every product has a promise or a note, so never close early.")
+        lines.append("If a message names several products at once, handle them one at a time, one tool call per message.")
     ot = mp.on_transfer
     if ot is not None:
         if ot.add_no_notes:
@@ -836,10 +973,15 @@ def negotiate_task(spec: PolicySpec, ctx: PromptCtx) -> str:
         + placeholder("date_facts") + "\n\n" + placeholder("product_facts")
     )
     finish_bits = []
-    if ctx.finalize_transition:
+    if ctx.auto_close:
+        finish_bits.append(
+            "When every product is handled (a promise or a note) the call ends by itself; "
+            "do not say goodbye or the confirmation sentence yourself."
+        )
+    elif ctx.finalize_transition:
         finish_bits.append(
             "When every product is handled (a promise or a note) or the call is transferred, "
-            + _say_goodbye(spec) + " and call " + ctx.finalize_transition + "."
+            + _close_with(spec, ctx, ctx.finalize_transition) + "."
         )
     return _join(
         [
@@ -854,7 +996,7 @@ def negotiate_task(spec: PolicySpec, ctx: PromptCtx) -> str:
             _section("Several products:", _multi_lines(spec, ctx)),
             _intents_text(spec, ctx, STAGE_NEGOTIATE),
             "\n".join(finish_bits),
-            _mandated(spec, STAGE_NEGOTIATE),
+            _mandated(spec, STAGE_NEGOTIATE, ctx.auto_drop_texts),
             _rules(spec, NEGOTIATE_RULE_STAGES),
             prompts.render_tool_rules(),
         ]

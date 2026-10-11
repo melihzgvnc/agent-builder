@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Protocol
 
 from builder.online_cases import GenCase
+from builder.sim_poll import run_simulation_resilient
 
 BATCH_SIZE: int = 5  # matches the default simulation concurrency
 STAGE_SOFT_MARGIN_S: float = 45.0  # the stage returns this long before its hard time limit
@@ -187,9 +188,10 @@ def run_batch(freya: Any, bank: Bank, scoring: Any, cases: list[GenCase], agent_
 
         def target() -> None:
             try:
-                out["value"] = freya.run_simulation(
-                    agent_id, f"online {time.strftime('%H:%M:%S')}",
-                    {persona_ids[c.id]: sessions[c.id] for c in live}, max_seconds=SIM_MAX_SECONDS)
+                out["value"] = run_simulation_resilient(
+                    freya, agent_id, f"online {time.strftime('%H:%M:%S')}",
+                    {persona_ids[c.id]: sessions[c.id] for c in live}, SIM_MAX_SECONDS,
+                    deadline_s=budget.remaining() - reserve_s)
             except BaseException as e:  # noqa: BLE001
                 out["error"] = e
 

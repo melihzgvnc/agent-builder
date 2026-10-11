@@ -26,7 +26,7 @@ def test_fallback_lints_clean_and_has_no_none() -> None:
     assert _no_none(wf)
     assert "agent_config" not in wf
     assert any(w.startswith("FALLBACK") for w in report.warnings)
-    assert report.to_dict().keys() == {"warnings", "gaps", "to_verify", "written_vars", "lint"}
+    assert report.to_dict().keys() == {"warnings", "gaps", "to_verify", "written_vars", "lint", "degraded"}
 
 
 def test_fallback_shape_and_brief_paragraphs() -> None:

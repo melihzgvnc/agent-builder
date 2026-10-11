@@ -23,6 +23,7 @@ MARKER: str = "LIVE-TEST REMINDER"
 MAX_REMINDERS: int = 3
 MAX_REPAIR_ROUNDS: int = 2
 SENTINELS: int = 2
+MAX_INFRA_BATCHES: int = 1  # stop after this many consecutive batches in which every case is an infra error
 
 INFRA, EXPECTATION, HOOK, CLOSING, BEHAVIOR, CONVERSATION, NOISE = (
     "infra", "expectation", "hook", "closing", "behavior", "conversation", "judge_noise")
@@ -76,8 +77,7 @@ def call_violations(case: GenCase, spec: dict, calls: list) -> list[str]:
                 bad.append(f"{tool}: product {pid} is not in the account")
                 continue
             p = case.products[case.product_ids.index(pid)]
-            band = engine.band_for(p.get(str((spec.get("account_fields") or {}).get("days_late") or "")), spec)
-            deadline = engine.deadline_for(band, today, cal) if band else None
+            deadline = engine.product_deadline(p, today, spec, cal)
             r = engine.check_promise_date(date, today, deadline, cal)
             if r["status"] != "ok":
                 bad.append(f"{tool}: date {date} is {r['status']} (deadline {r['deadline'] or 'unknown'})")
@@ -307,13 +307,15 @@ def run_loop(*, cases: list[GenCase], baseline: dict, spec: dict, budget: Budget
             else:
                 out.classes.pop(i, None)
 
-    # round 0: the baseline, five cases per simulation
+    # round 0: the baseline, five cases per simulation; one batch where every case is infra stops the stage
+    consecutive_infra_batches = 0
     for i in range(0, len(cases), BATCH_SIZE):
         res = timed(cases[i:i + BATCH_SIZE], False)
         if res is None:
             break
         out.results.update({r.id: r for r in res})
-        if res and all(r.infra for r in res):
+        consecutive_infra_batches = consecutive_infra_batches + 1 if res and all(r.infra for r in res) else 0
+        if consecutive_infra_batches >= MAX_INFRA_BATCHES:
             degrade("simulations are not working (" + str(res[0].infra_error)[:160] + "); testing stopped, workflow unchanged")
             break
     classify_all(out.results)

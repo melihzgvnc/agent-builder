@@ -128,6 +128,115 @@ def test_snippet_matches_engine(case: str, spec: dict[str, Any], restricted: boo
         assert facts["p1_name"] == "credit card ending 9015"
 
 
+def _new_field_spec() -> dict[str, Any]:
+    """SPEC_AB with account-based deadlines, percent floors, per-weekday windows and attempt date_n."""
+    spec = copy.deepcopy(SPEC_AB)
+    spec["calendar"]["holidays"] = []
+    spec["account_fields"]["due_date"] = "due_on"
+    spec["bands"][0]["deadline"] = {"kind": "business_days_after_base", "n": 4, "base": "due_date_field"}
+    spec["bands"][1]["deadline"] = {
+        "kind": "calendar_days_after_base", "n": 6, "base": "days_late_field", "roll": "previous_business_day"
+    }
+    del spec["amounts"]["floor_fields"]
+    spec["amounts"]["floor_percent"] = {"credit_card": {"percent": 12.5, "of_field": "bal"}}
+    spec["amounts"]["floor_default_percent"] = {"percent": 33.3, "of_field": "bal"}
+    spec["amounts"]["rounding_mode"] = "half_even"
+    spec["persuasion"]["attempts"][0]["date_rule"] = "business_days_after_today"
+    spec["persuasion"]["attempts"][0]["date_n"] = 3
+    spec["third_party"]["callback_window"]["per_weekday"] = [
+        {"weekdays": ["thursday"], "hour_start": "09:00", "hour_end": "13:00", "inclusive": False}
+    ]
+    return spec
+
+
+NEW_SPEC: dict[str, Any] = _new_field_spec()
+NEW_PRODUCTS: list[dict[str, Any]] = [
+    {"product_id": "n1", "type": "credit_card", "days_late": 5, "past_due": 800.0, "bal": "1.00", "due_on": "2026-10-09"},
+    {"product_id": "n2", "type": "personal_loan", "days_late": 12, "past_due": 640.5, "bal": 100.05,
+     "instalment_amount": 99.0, "due_on": "2026-10-02"},
+    {"product_id": "n3", "type": "car_loan", "days_late": 9, "past_due": 75.0, "bal": "oops", "due_on": "garbage"},
+]
+
+
+@pytest.mark.parametrize(("restricted", "layout"), EXEC_MODES, ids=EXEC_MODE_IDS)
+def test_snippet_matches_engine_for_new_fields(restricted: bool, layout: str) -> None:
+    src = facts_snippet(NEW_SPEC, IO)
+    results: dict[str, dict[str, Any]] = {}
+    for form, vars_in in input_forms(NEW_PRODUCTS).items():
+        expected = engine.compute_facts(copy.deepcopy(vars_in), NEW_SPEC, IO)
+        got, _ = run_snippet(src, copy.deepcopy(vars_in), restricted=restricted, layout=layout)
+        assert facts_only(got, NEW_SPEC) == expected, form
+        results[form] = expected
+    assert results["list"] == results["json"] == results["flat"]
+    facts = results["list"]
+    assert facts["p1_deadline"] == "2026-10-15" and facts["p1_floor"] == 0.12
+    assert facts["p2_deadline"] == "2026-10-08" and facts["p2_floor"] == 33.32
+    assert facts["p3_deadline"] == "2026-10-09" and facts["p3_floor"] == ""
+    assert facts["p1_attempt1_date"] == "2026-10-15"  # capped by the deadline
+    assert "Business days of the week: Monday, Tuesday, Wednesday, Thursday, Friday." in facts["date_facts"]
+    assert "the hours depend on the date" in facts["date_facts"]
+    assert "- allowed promise dates (every business day up to the latest promise date): " in facts["product_facts"]
+    assert "One date for all products" in facts["product_facts"]
+
+
+def _new_field_calls() -> list[tuple[str, Callable[[dict[str, Any]], object]]]:
+    spec = NEW_SPEC
+    prods = engine.normalize_products(NEW_PRODUCTS, {}, "", spec)
+    cases: list[tuple[str, Callable[[dict[str, Any]], object]]] = []
+
+    def cal(m: dict[str, Any]) -> dict[str, Any]:
+        return m["make_calendar"](spec)
+
+    for i, prod in enumerate(prods):
+        cases.append((f"product_deadline n{i + 1}", lambda m, p=prod: m["product_deadline"](p, TODAY, spec, cal(m))))
+        cases.append((f"floor_for n{i + 1}", lambda m, p=prod: m["floor_for"](p, spec)))
+        cases.append((f"attempt n{i + 1}", lambda m, p=prod: m["attempt_offer"](1, p, TODAY, spec, cal(m))))
+        cases.append((f"base_date n{i + 1}", lambda m, p=prod: m["base_date_for"](
+            {"base": "due_date_field"}, p, TODAY, spec)))
+    for mode in ("half_up", "half_even", "up", "down", None):
+        alt = copy.deepcopy(spec)
+        if mode:
+            alt["amounts"]["rounding_mode"] = mode
+        else:
+            del alt["amounts"]["rounding_mode"]
+        for bal in (1.0, 3.0, 100.05, 0.01, 1234.56):
+            cases.append((f"rounding {mode} {bal}", lambda m, a=alt, b=bal: m["floor_for"](
+                {"product_id": "x", "type": "credit_card", "bal": b}, a)))
+    cases.append(("calendar_summary", lambda m: m["calendar_summary"](cal(m))))
+    cases.append(("calendar_summary sunday", lambda m: m["calendar_summary"](
+        m["make_calendar"]({"calendar": {"weekend_days": ["friday", "saturday"], "week_starts_on": "sunday"}}))))
+    cases.append(("one_date_table", lambda m: m["one_date_table"](prods[:2], TODAY, spec, cal(m))))
+    dates = [D("2026-10-14"), D("2026-10-15"), D("2026-10-16")]
+    cases.append(("callback_hours_text", lambda m: m["callback_hours_text"](dates, spec)))
+    for day in dates:
+        cases.append((f"callback_window_for {day}", lambda m, d=day: m["callback_window_for"](d, spec)))
+    for p in ("2026-10-15T09:30", "2026-10-15T13:00", "2026-10-15T12:59", "2026-10-16T18:00", "2026-10-16T09:30"):
+        cases.append((f"check_callback {p}", lambda m, p=p: m["check_callback"](
+            datetime.fromisoformat(p), datetime.fromisoformat("2026-10-14T08:00"), spec, cal(m))))
+    cases.append(("one_date_for_all", lambda m: m["one_date_for_all"](D("2026-10-20"), prods, TODAY, spec, cal(m))))
+    return cases
+
+
+@pytest.mark.parametrize(("restricted", "layout"), EXEC_MODES, ids=EXEC_MODE_IDS)
+def test_snippet_function_agreement_for_new_fields(restricted: bool, layout: str) -> None:
+    _, ns = run_snippet(facts_snippet(NEW_SPEC, IO), {"now": NOW}, restricted=restricted, layout=layout)
+    snippet_engine = ns["ENGINE"]
+    assert snippet_engine["SPEC"]["amounts"]["rounding_mode"] == "half_even"
+    assert snippet_engine["SPEC"]["amounts"]["floor_percent"] == NEW_SPEC["amounts"]["floor_percent"]
+    mod = vars(engine)
+    for label, call in _new_field_calls():
+        assert call(snippet_engine) == call(mod), label
+
+
+def test_spec_subset_keeps_the_new_keys() -> None:
+    subset = spec_subset(NEW_SPEC)
+    assert subset["amounts"]["floor_default_percent"] == NEW_SPEC["amounts"]["floor_default_percent"]
+    assert subset["account_fields"]["due_date"] == "due_on"
+    assert subset["bands"][0]["deadline"]["base"] == "due_date_field"
+    assert subset["third_party"]["callback_window"]["per_weekday"]
+    assert subset["persuasion"]["attempts"][0]["date_n"] == 3
+
+
 REJECT_SPEC: dict[str, Any] = copy.deepcopy(SPEC_AB)
 REJECT_SPEC["multi_product"]["one_date_for_all"] = "reject_if_any_after_deadline"
 

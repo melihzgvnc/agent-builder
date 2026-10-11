@@ -16,7 +16,8 @@ Variables hooks write (the compiler checks them against every model-filled field
 identity_state, identity_wrong, identity_verified_count, callback_state, callback_invalid_count,
 callback_guard, account_guard, transfer_guard, callback_sent_date, callback_sent_time, promise_idx, promise_guard,
 promise_asked_date, promise_asked_amount, promise_sent_date, promise_sent_amount,
-promise_changed, promise_state, p<k>_promise, p<k>_promise_fails, p<k>_promise_date,
+promise_changed, promise_reject, promise_limit_date, promise_limit_amount, promise_unchecked,
+callback_hours, p<k>_promise_rejects, promise_state, p<k>_promise, p<k>_promise_fails, p<k>_promise_date,
 p<k>_promise_amount, p<k>_note, p<k>_note_fails, note_idx, note_guard, note_sent_reason,
 note_blocked_hit, notes_blocked, transfer_sent_queue, transfer_state, transfer_reason,
 closing_ready, final_outcome, final_reason.
@@ -59,9 +60,21 @@ DEFAULT_TEXTS: dict[str, str] = {
     "cb_none": "No valid callback time was found and nothing was recorded. Follow your instructions for this case and call ",
     "cb_done": "The callback is recorded for ",
     "cb_done_exit": ". Tell the contact, say the goodbye text from your instructions, then call ",
+    "cb_done_exit_auto": ". Tell the contact the callback is arranged (the goodbye is spoken automatically), then call ",
     "cb_fail": "The callback was not recorded. Do not say it was.",
     "recorded": "The promise is recorded: ",
-    "differs": "These values differ from what the customer asked for. Tell the customer the recorded values.",
+    "reject": "The promise was NOT recorded: the values were rejected before they were sent.",
+    "rej_date_after_deadline": " The date is later than the latest allowed promise date; the latest allowed date is <limit>.",
+    "rej_date_not_business_day": " The date is not a business day; the closest allowed date is <limit>.",
+    "rej_date_past": " The date is in the past; the earliest allowed date is <limit>.",
+    "rej_date_invalid": " The date is not a valid date.",
+    "rej_amount_above_full": " The amount is higher than the full amount; the most that can be promised is <limit>.",
+    "rej_amount_below_floor": " The amount is below the lowest allowed amount; the least that can be promised is <limit>.",
+    "rej_amount_invalid": " The amount is not a valid positive amount.",
+    "reread": (
+        " Tell the customer the allowed value, read the promise back with it, and call the tool again "
+        "only after the customer clearly confirms the new read-back."
+    ),
     "success": " Say this sentence to the customer: ",
     "next_product": " Next product to handle: ",
     "next_product_tools": " Follow your instructions for it: record a promise or add a note.",
@@ -74,6 +87,7 @@ DEFAULT_TEXTS: dict[str, str] = {
     "transfer_ok": "The transfer is done. Tell the customer they are being connected.",
     "transfer_fail": "The transfer failed. Do not say the customer is being connected.",
     "finish": "Everything is handled.",
+    "auto_close": "Everything is handled. Say nothing more: the confirmation and the goodbye are spoken automatically and the call ends.",
 }
 
 # Closing words per hook, filled by the compiler from the spec; absent -> nothing is added.
@@ -279,6 +293,9 @@ _H_NEXT_TEXT = """
 def _next_text(k):
     if _all_handled():
         vars['closing_ready'] = 'yes'
+        if AUTO_CLOSE:
+            vars['auto_close'] = 'yes'
+            return ' ' + T_AUTO
         return ' ' + FINISH
     nk = _next_pending(k)
     if nk == 0:
@@ -291,7 +308,9 @@ def _finish_text(cfg: dict, t: dict[str, str]) -> str:
     """'Everything is handled. <goodbye> Then call <finalize transition>.'"""
     parts = [t["finish"]]
     goodbye = cfg.get("goodbye")
-    if goodbye:
+    if cfg.get("farewell_auto"):
+        parts.append("The goodbye is spoken automatically.")
+    elif goodbye:
         parts.append("Say the goodbye text: " + goodbye)
     else:
         parts.append("Say goodbye if your instructions say so.")
@@ -464,6 +483,32 @@ if not GAPS and NOW_VAR != '' and _s(vars.get('callback_dates')) == '':
 """
 
 _CB_PRE_BODY = _CB_CALENDAR + """
+def _win(wd):
+    for w in WINDOWS:
+        if w[0] == wd:
+            return [_hm(w[1]), _hm(w[2]), w[1], w[2], w[3]]
+    return [HS, HE, HS_S, HE_S, INCL]
+def _hm(x):
+    if len(x) == 5 and x[2] == ':' and x[:2].isdigit() and x[3:].isdigit():
+        return int(x[:2]) * 60 + int(x[3:])
+    return None
+def _wd_of(d):
+    return (_to_days(int(d[:4]), int(d[5:7]), int(d[8:10])) + 3) % 7
+if not GAPS:
+    lines = []
+    for x in _s(vars.get('callback_dates')).split(','):
+        if _valid_date(x):
+            w = _win(_wd_of(x))
+            hrs = _s(w[2]) + ' to ' + _s(w[3])
+            if w[4]:
+                hrs = hrs + ' (both included)'
+            else:
+                hrs = hrs + ' (end excluded)'
+            wn = ''
+            if _wd_of(x) < len(WDNAMES):
+                wn = WDNAMES[_wd_of(x)].capitalize()
+            lines.append(wn + ' ' + x + ': ' + hrs)
+    vars['callback_hours'] = chr(10).join(lines)
 body = config.get('body')
 if isinstance(body, dict):
     raw_date = _s(body.get(F_DATE)).strip()
@@ -490,13 +535,21 @@ if isinstance(body, dict):
             if x != '':
                 dates.append(x)
         good = mins is not None and d in dates
-        if good and HS is not None and mins < HS:
+        hs = HS
+        he = HE
+        incl = INCL
+        if good and _valid_date(d):
+            wn = _win(_wd_of(d))
+            hs = wn[0]
+            he = wn[1]
+            incl = wn[4]
+        if good and hs is not None and mins < hs:
             good = False
-        if good and HE is not None:
-            if INCL:
-                late = mins > HE or (mins == HE and secs > 0)
+        if good and he is not None:
+            if incl:
+                late = mins > he or (mins == he and secs > 0)
             else:
-                late = mins >= HE
+                late = mins >= he
             if late:
                 good = False
         if good and AFTER_NOW and d == _s(vars.get('today')):
@@ -532,18 +585,30 @@ def callback_pre_hook(cfg: dict) -> str:
       fields: dict date / time -> body field names;
       hour_start, hour_end: 'HH:MM' strings (or None);
       inclusive, must_be_after_now: bool | None (None means the policy is silent);
+      windows: list of [weekday index (Monday 0), hour_start, hour_end, inclusive | None] that override
+               the single window on that weekday (first entry per weekday wins);
+      weekday_names: weekday names indexed like windows (engine.WEEKDAYS);
       gaps: bool, True when the window is not fully defined (engine.callback_window_gaps) -
             the hook then leaves the request unchanged and sets vars['callback_guard']='skipped'.
     Reads vars callback_dates (comma-joined ISO dates), today, now_time. Writes callback_state
-    ('' valid / skipped, 'invalid'), callback_invalid_count, callback_sent_date, callback_sent_time.
+    ('' valid / skipped, 'invalid'), callback_invalid_count, callback_sent_date, callback_sent_time,
+    callback_hours (one line per allowed date, the same text as engine.callback_hours_text).
     """
     f = cfg.get("fields") or {}
     gaps = bool(cfg.get("gaps")) or cfg.get("inclusive") is None or cfg.get("must_be_after_now") is None
+    windows = []
+    for w in cfg.get("windows") or []:
+        # [weekday index, hour_start, hour_end, inclusive]; a missing inclusive keeps the single window's value
+        windows.append([int(w[0]), str(w[1]), str(w[2]), bool(cfg.get("inclusive")) if w[3] is None else bool(w[3])])
     consts = [
         ("F_DATE", str(f.get("date") or "date")),
         ("F_TIME", str(f.get("time") or "time")),
         ("HS", _hhmm_minutes(cfg.get("hour_start"))),
         ("HE", _hhmm_minutes(cfg.get("hour_end"))),
+        ("HS_S", str(cfg.get("hour_start") or "")),
+        ("HE_S", str(cfg.get("hour_end") or "")),
+        ("WINDOWS", windows),
+        ("WDNAMES", [str(x) for x in cfg.get("weekday_names") or []]),
         ("INCL", bool(cfg.get("inclusive"))),
         ("AFTER_NOW", bool(cfg.get("must_be_after_now"))),
         ("GAPS", gaps),
@@ -552,7 +617,7 @@ def callback_pre_hook(cfg: dict) -> str:
         ("HOLIDAYS", [str(x) for x in cfg.get("holidays") or []]),
         ("NDAYS", cfg.get("days_n") if isinstance(cfg.get("days_n"), int) else 0),
     ]
-    return _assemble("pre", consts, [_H_BASE_NODEC], _CB_PRE_BODY)
+    return _assemble("pre", consts, [_H_BASE_NODEC, _H_DATE], _CB_PRE_BODY)
 
 
 _CB_POST_BODY = """
@@ -570,7 +635,11 @@ if isinstance(data, dict):
             vars['callback_state'] = 'no_valid_time'
             text = T_NONE + EXIT_NONE + '.'
         else:
-            text = T_REASK + ' Allowed dates: ' + _s(vars.get('callback_dates')) + '.' + HOURS
+            text = T_REASK + ' Allowed dates: ' + _s(vars.get('callback_dates')) + '.'
+            if _s(vars.get('callback_hours')) != '':
+                text = text + ' Allowed hours:' + chr(10) + _s(vars.get('callback_hours'))
+            else:
+                text = text + HOURS
     elif _true(data.get(OK_KEY)):
         vars['callback_state'] = 'scheduled'
         text = T_DONE + _s(vars.get('callback_sent_date')) + ' at ' + _s(vars.get('callback_sent_time')) + T_DONE_EXIT + EXIT_SCHED + '.'
@@ -607,7 +676,7 @@ def callback_post_hook(cfg: dict) -> str:
         ("T_REASK", t["cb_reask"]),
         ("T_NONE", t["cb_none"]),
         ("T_DONE", t["cb_done"]),
-        ("T_DONE_EXIT", t["cb_done_exit"]),
+        ("T_DONE_EXIT", t["cb_done_exit_auto"] if cfg.get("farewell_auto") else t["cb_done_exit"]),
         ("T_FAIL", t["cb_fail"]),
     ]
     return _assemble("post", consts, [_H_BASE_NODEC], _CB_POST_BODY)
@@ -619,6 +688,12 @@ def callback_post_hook(cfg: dict) -> str:
 
 _PROMISE_PRE_BODY = """
 body = config.get('body')
+if isinstance(body, dict):
+    vars['promise_guard'] = ''
+    vars['promise_reject'] = ''
+    vars['promise_limit_date'] = ''
+    vars['promise_limit_amount'] = ''
+    vars['promise_unchecked'] = ''
 if isinstance(body, dict) and _gated():
     body[F_PROD] = ''
     vars['promise_guard'] = 'blocked'
@@ -638,45 +713,69 @@ elif isinstance(body, dict):
             vars['promise_asked_amount'] = ''
         else:
             vars['promise_asked_amount'] = asked_amt
-        guard = ''
-        dl = _s(_get(k, 'deadline'))
-        cands = []
-        if dl != '':
-            for x in _s(vars.get('business_days')).split(','):
-                if x != '' and x <= dl:
-                    cands.append(x)
-        if len(cands) > 0:
-            if _valid_date(asked_date):
-                pick = cands[-1]
-                for c in cands:
-                    if c >= asked_date:
-                        pick = c
-                        break
-            else:
-                pick = cands[0]
-            body[F_DATE] = pick
+        reasons = []
+        unchecked = []
+        limit_date = ''
+        limit_amt = ''
+        today = _s(vars.get('today')).strip()
+        dl = _s(_get(k, 'deadline')).strip()
+        bds = []
+        for x in _s(vars.get('business_days')).split(','):
+            if x != '':
+                bds.append(x)
+        upto = []
+        if _valid_date(dl):
+            for x in bds:
+                if x <= dl:
+                    upto.append(x)
+        if not _valid_date(asked_date):
+            reasons.append('date_invalid')
         else:
-            guard = 'skipped'
+            if _valid_date(today) and asked_date < today:
+                reasons.append('date_past')
+                if len(bds) > 0:
+                    limit_date = bds[0]
+            elif _valid_date(dl) and asked_date > dl:
+                reasons.append('date_after_deadline')
+                if len(upto) > 0:
+                    limit_date = upto[-1]
+            elif _valid_date(dl) and len(bds) > 0 and asked_date <= bds[-1] and asked_date not in bds:
+                reasons.append('date_not_business_day')
+                if len(upto) > 0:
+                    limit_date = upto[-1]
+                    for c in upto:
+                        if c >= asked_date:
+                            limit_date = c
+                            break
+            if not _valid_date(dl) or len(bds) == 0:
+                unchecked.append('date')
         full = _num(_get(k, 'full'))
         floor = _num(_get(k, 'floor'))
-        if full is not None:
-            fc = int(round(full * 100))
-            out = full
-            if asked_amt is not None and int(round(asked_amt * 100)) > 0:
-                ac = int(round(asked_amt * 100))
-                if ac >= fc:
-                    out = full
-                elif floor is None:
-                    out = full
-                elif ac < int(round(floor * 100)):
-                    out = floor
-                else:
-                    out = asked_amt
-            body[F_AMT] = round(out, DEC)
+        if asked_amt is None or int(round(asked_amt * 100)) <= 0:
+            reasons.append('amount_invalid')
         else:
-            guard = 'skipped'
-        if guard != '':
-            vars['promise_guard'] = guard
+            ac = int(round(asked_amt * 100))
+            if full is not None and ac > int(round(full * 100)):
+                reasons.append('amount_above_full')
+                limit_amt = full
+            elif floor is not None and ac < int(round(floor * 100)):
+                reasons.append('amount_below_floor')
+                limit_amt = floor
+            if full is None or floor is None:
+                unchecked.append('amount')
+        if len(unchecked) > 0:
+            vars['promise_unchecked'] = ','.join(unchecked)
+        if len(reasons) > 0:
+            for r in reasons:
+                if r.startswith('date'):
+                    body[F_DATE] = ''
+                else:
+                    body[F_AMT] = 0
+            body[F_PROD] = ''
+            vars['promise_guard'] = 'rejected'
+            vars['promise_reject'] = ','.join(reasons)
+            vars['promise_limit_date'] = limit_date
+            vars['promise_limit_amount'] = limit_amt
         sent_date = _s(body.get(F_DATE)).strip()[:10]
         sent_amt = _num(body.get(F_AMT))
         vars['promise_sent_date'] = sent_date
@@ -684,11 +783,8 @@ elif isinstance(body, dict):
             vars['promise_sent_amount'] = ''
         else:
             vars['promise_sent_amount'] = sent_amt
-        changed = sent_date != asked_date
-        if sent_amt is None or asked_amt is None or abs(sent_amt - asked_amt) >= 0.005:
-            changed = True
-        if changed:
-            vars['promise_changed'] = 'yes'
+        if len(reasons) > 0:
+            vars['promise_changed'] = 'rejected'
         else:
             vars['promise_changed'] = 'no'
 """
@@ -703,20 +799,22 @@ def _slot_consts(cfg: dict) -> list[tuple[str, Any]]:
 
 
 def promise_pre_hook(cfg: dict) -> str:
-    """Pre-hook of the promise tool: force the product id, clamp the date and the amount.
+    """Pre-hook of the promise tool: force the product id; reject (never rewrite) a provably bad value.
 
     cfg keys:
       fields: dict product / amount / date -> body field names;
       n_products: int (multi_product.max_products, 1 for a single product);
       multi: bool (multi_product.enabled);
       decimals: int (amounts.rounding_decimals).
-    Reads vars p<k>_id / _full / _floor / _deadline / _promise / _note and business_days.
-    Date: first business day >= the requested ISO date and <= the product's deadline, else the
-    last such day; invalid or past -> the first. Amount: > full -> full, < floor -> floor,
-    unreadable -> full, floor unknown and below full -> full. When the deadline (or the full
-    amount) is unknown the part stays unchanged and vars['promise_guard']='skipped'.
-    Writes promise_idx, promise_asked_date, promise_asked_amount, promise_sent_date,
-    promise_sent_amount, promise_changed ('yes'|'no').
+    Reads vars today, business_days and p<k>_id / _full / _floor / _deadline / _promise / _note.
+    The value the model sent is never replaced by a different one and nothing is written as
+    'unknown'. A rule is checked only when the fact it needs is known: date_invalid, date_past,
+    date_after_deadline, date_not_business_day, amount_invalid, amount_above_full,
+    amount_below_floor. On a violation the offending field (date '', amount 0) and the product
+    id are blanked and promise_guard='rejected'; promise_reject lists the reasons,
+    promise_limit_date / promise_limit_amount the allowed value. Unchecked parts are listed in
+    promise_unchecked. Writes promise_idx, promise_asked_*, promise_sent_*, promise_changed
+    ('no' | 'rejected').
     """
     f = cfg.get("fields") or {}
     consts = _slot_consts(cfg) + [
@@ -737,23 +835,45 @@ if isinstance(data, dict):
     k = _int(vars.get('promise_idx'))
     if k < 1:
         k = 1
-    if _true(data.get(OK_KEY)):
+    rejected = _s(vars.get('promise_guard')) == 'rejected'
+    fail = False
+    text = ''
+    if rejected:
+        data[OK_KEY] = False
+        rj = _int(_get(k, 'promise_rejects')) + 1
+        vars[_key(k, 'promise_rejects')] = rj
+        if rj <= REJECT_CAP:
+            text = T_REJECT
+            for r in _s(vars.get('promise_reject')).split(','):
+                if r in T_REJ:
+                    lim = ''
+                    if r.startswith('date'):
+                        lim = _s(vars.get('promise_limit_date'))
+                    elif _s(vars.get('promise_limit_amount')) != '':
+                        lim = _money(vars.get('promise_limit_amount'))
+                    if lim == '':
+                        lim = 'not known; use the dates and amounts in your instructions'
+                    text = text + T_REJ[r].replace('<limit>', lim)
+            text = text + T_REREAD
+        else:
+            fail = True
+    elif _true(data.get(OK_KEY)):
         vars[_key(k, 'promise')] = 'recorded'
         vars[_key(k, 'promise_date')] = _s(vars.get('promise_sent_date'))
         vars[_key(k, 'promise_amount')] = vars.get('promise_sent_amount')
         text = T_RECORDED + _money(vars.get('promise_sent_amount')) + ' on ' + _s(vars.get('promise_sent_date')) + '.'
-        if _s(vars.get('promise_changed')) == 'yes':
-            text = text + ' ' + T_DIFFERS + ' Asked: ' + _money(vars.get('promise_asked_amount')) + ' on ' + _s(vars.get('promise_asked_date')) + '.'
-        if SUCCESS != '':
+        if SUCCESS != '' and not AUTO_CLOSE:
             text = text + T_SUCCESS + SUCCESS
         text = text + _next_text(k)
     else:
+        fail = True
+    if fail:
         fails = _int(_get(k, 'promise_fails')) + 1
         vars[_key(k, 'promise_fails')] = fails
         allowed = 0
         if RETRIES is not None:
             allowed = RETRIES
-        if fails <= allowed:
+        if fails <= allowed and not rejected:
             text = T_RETRY
         elif MULTI and NOTE_REASON != '':
             vars[_key(k, 'promise')] = 'failed'
@@ -772,12 +892,17 @@ def promise_post_hook(cfg: dict) -> str:
       ok_key: response key (default 'ok');
       n_products, multi, decimals: as in promise_pre_hook;
       retries: int | None (promise_rules.retries_on_failure; None counts as 0);
+      reject_cap: int (rejections per product that ask for a new read-back, default 2);
+      auto_close: bool; when every product is handled the hook sets vars['auto_close'] = 'yes' and the
+        text says the call ends by itself (the success sentence is then spoken by the end node);
       note_reason: str | None (multi_product.on_promise_failure.note_reason);
       success_sentence: str | None; goodbye: str | None (closing.goodbye_before_close.text);
       finalize_transition: name of the transition tool that goes to the finalize node;
       texts: optional overrides.
     ok -> p<k>_promise 'recorded' (+ _promise_date, _promise_amount), closing_ready 'yes' once
-    every product is recorded or noted; what_to_do_next states the actual recorded values.
+    every product is recorded or noted; what_to_do_next states the recorded values (always the confirmed ones).
+    Rejected by the pre-hook -> ok False, p<k>_promise_rejects += 1, text names the limit and asks for a
+    new read-back; beyond reject_cap the failure path below runs without retries.
     Not ok -> p<k>_promise_fails += 1; within retries call again; then multi + note_reason ->
     p<k>_promise 'failed' (note it), else promise_state 'write_failed'.
     """
@@ -788,8 +913,13 @@ def promise_post_hook(cfg: dict) -> str:
         ("NOTE_REASON", str(cfg.get("note_reason") or "")),
         ("SUCCESS", str(cfg.get("success_sentence") or "")),
         ("FINISH", _finish_text(cfg, t)),
+        ("AUTO_CLOSE", bool(cfg.get("auto_close"))),
+        ("T_AUTO", t["auto_close"]),
         ("T_RECORDED", t["recorded"]),
-        ("T_DIFFERS", t["differs"]),
+        ("REJECT_CAP", int(cfg.get("reject_cap") if cfg.get("reject_cap") is not None else 2)),
+        ("T_REJECT", t["reject"]),
+        ("T_REREAD", t["reread"]),
+        ("T_REJ", {k[4:]: t[k] for k in t if k.startswith("rej_")}),
         ("T_SUCCESS", t["success"]),
         ("T_NEXT_PRODUCT", t["next_product"]),
         ("T_NEXT_TOOLS", t["next_product_tools"]),
@@ -895,6 +1025,8 @@ def note_post_hook(cfg: dict) -> str:
     consts = _slot_consts(cfg) + [
         ("OK_KEY", _ok_key(cfg)),
         ("FINISH", _finish_text(cfg, t)),
+        ("AUTO_CLOSE", bool(cfg.get("auto_close"))),
+        ("T_AUTO", t["auto_close"]),
         ("T_OK", t["note_ok"]),
         ("T_RETRY", t["note_retry"]),
         ("T_GAVE_UP", t["note_gave_up"]),
@@ -1111,6 +1243,17 @@ _FINALIZE_BODY = """
 if FORCE:
     vars['closing_ready'] = 'yes'
 if _s(vars.get('closing_ready')) == 'yes':
+    cnt = 0
+    for k in _active():
+        if _s(_get(k, 'promise')) == 'recorded':
+            cnt += 1
+    variant = ''
+    if _s(vars.get('transfer_state')) != 'done' and _s(vars.get('transfer_reason')) == '':
+        if cnt == 1 and CONFIRM_SINGLE:
+            variant = 'single'
+        elif cnt > 1 and CONFIRM_PLURAL:
+            variant = 'plural'
+    vars['closing_variant'] = variant
     pair = _final_pair()
     if pair is not None:
         vars['final_outcome'] = pair[0]
@@ -1133,11 +1276,18 @@ def finalize_source(cfg: dict, force: bool) -> str:
     """Code-node source computing final_outcome / final_reason once the call is ready to end.
 
     cfg keys: aggregation, n_products, fallback_pre, fallback_post, reasonless (see
-    close_pre_hook). force=False does nothing unless vars['closing_ready'] == 'yes'; force=True
+    close_pre_hook); confirm_single / confirm_plural: bool, the spec has a confirmation sentence
+    for one / several recorded promises (default False). Ready: vars['closing_variant'] is 'single'
+    (one promise recorded), 'plural' (several) or '' (transfer done, nothing recorded, no sentence).
+    force=False does nothing unless vars['closing_ready'] == 'yes'; force=True
     sets it first. On any exception: closing_ready 'yes' and the fallback pair.
     """
     consts, helpers, top = _final_parts(cfg)
-    consts = consts + [("FORCE", bool(force))]
+    consts = consts + [
+        ("FORCE", bool(force)),
+        ("CONFIRM_SINGLE", bool(cfg.get("confirm_single"))),
+        ("CONFIRM_PLURAL", bool(cfg.get("confirm_plural"))),
+    ]
     return _assemble("code", consts, helpers, _FINALIZE_BODY, fallback=_FINALIZE_FALLBACK, top=top)
 
 

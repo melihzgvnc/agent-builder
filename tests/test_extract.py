@@ -267,3 +267,18 @@ def test_grounding_does_not_borrow_enum_from_other_tool(tmp_path: Path) -> None:
     spec, warns, llm = run(write_briefs(tmp_path, "text"), [tool(s), EMPTY_COVERAGE])
     assert any(r.get("reason") == "free_text_reason" for r in spec["closing"]["outcome_table"])
     assert not any("free_text_reason" in w for w in warns)
+
+
+def test_prompts_state_latest_wins_and_add_nothing() -> None:
+    from pathlib import Path
+    d = Path(__file__).resolve().parent.parent / "builder" / "extract_prompts"
+    for name in ("system.md", "coverage.md"):
+        text = (d / name).read_text(encoding="utf-8")
+        assert "LATEST document wins" in text and "no document states" in text
+def test_prompts_mention_structured_formula_fields() -> None:
+    from pathlib import Path
+
+    d = Path(__file__).resolve().parent.parent / "builder" / "extract_prompts"
+    text = (d / "sections.md").read_text(encoding="utf-8") + (d / "system.md").read_text(encoding="utf-8")
+    for needle in ("business_days_after_base", "floor_percent", "per_weekday", "date_n", "gap_kind"):
+        assert needle in text

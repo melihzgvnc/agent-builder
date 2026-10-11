@@ -28,6 +28,16 @@ DATE_TEXT_RE: re.Pattern[str] = re.compile(r"\b(date|dates|birthday)\b", re.IGNO
 VARS_WRITE_RE: re.Pattern[str] = re.compile(r"""vars\[\s*['"]([^'"]+)['"]\s*\]\s*=(?!=)""")
 
 
+COUNT_WORDS: dict[str, int] = {"once": 1, "twice": 2, "thrice": 3}
+COUNT_RE: re.Pattern[str] = re.compile(r"\b(once|twice|thrice)\b|\b(\d+) times\b", re.IGNORECASE)
+SENTENCE_SPLIT_RE: re.Pattern[str] = re.compile(r"(?<=[.!?:;])\s+|\n+")
+STOPWORDS: frozenset[str] = frozenset((
+    "the", "and", "for", "with", "that", "this", "from", "then", "than", "when", "only", "not", "are", "was", "has",
+    "have", "his", "her", "any", "all", "one", "per", "each", "after", "before", "call", "ask", "say", "once", "twice",
+    "thrice", "times", "most", "least", "more", "same", "also", "into", "its", "your", "you", "can", "may", "must",
+))
+
+
 @dataclass(frozen=True)
 class Finding:
     """One lint result. severity is 'error' or 'warn'."""
@@ -403,6 +413,36 @@ def rule_placeholder_collision(wf: dict, out: list[Finding]) -> None:
                      f"model-filled field {name!r} shares its name with a variable a code node sets; it would be baked")
 
 
+def _sentence_counts(text: str) -> list[tuple[str, int, frozenset[str]]]:
+    """(sentence, repeat count, topic words) for every sentence that states a repeat count."""
+    out: list[tuple[str, int, frozenset[str]]] = []
+    for sentence in SENTENCE_SPLIT_RE.split(text):
+        m = COUNT_RE.search(sentence)
+        if not m:
+            continue
+        count = COUNT_WORDS[m.group(1).lower()] if m.group(1) else int(m.group(2))
+        words = frozenset(w for w in re.findall(r"[a-z]+", sentence.lower()) if len(w) >= 3 and w not in STOPWORDS)
+        out.append((sentence.strip(), count, words))
+    return out
+
+
+def rule_repeat_counts(wf: dict, out: list[Finding]) -> None:
+    """16: two sentences of one task about the same topic that give different repeat counts contradict each other."""
+    for path, node in iter_nodes(wf):
+        if node.get("node_type") != "conversation":
+            continue
+        items = _sentence_counts(str(node.get("task_message", "")))
+        done = False
+        for i, (a, ca, wa) in enumerate(items):
+            for b, cb, wb in items[i + 1:]:
+                if ca != cb and len(wa & wb) >= 2:
+                    _add(out, "warn", f"{path}.task_message", "repeat_counts", f"{a[:80]!r} vs {b[:80]!r}")
+                    done = True
+                    break
+            if done:
+                break
+
+
 RULES = (
     rule_no_const,
     rule_placement,
@@ -421,6 +461,7 @@ RULES = (
     rule_turn_cap,
     rule_tool_scope,
     rule_placeholder_collision,
+    rule_repeat_counts,
 )
 
 

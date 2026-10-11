@@ -107,7 +107,7 @@ def test_nodes_and_edges(key: str) -> None:
         if name.startswith("exit_"):
             assert node["node_type"] == "code" and node["passthrough"]
     ends = [n for n, v in nodes.items() if v["node_type"] == "end_call"]
-    assert set(ends) == {"end_final", "end_backend_failure"} | {
+    assert set(ends) == {"end_final", "end_final_single", "end_final_plural", "end_backend_failure"} | {
         "end_" + n[len("exit_"):] for n in nodes if n.startswith("exit_") and n != "exit_backend_failure"
     }
 
@@ -116,7 +116,7 @@ def test_nodes_and_edges(key: str) -> None:
 def test_tool_transitions_are_unique_per_target(key: str) -> None:
     wf, _ = compiled(key)
     for name, node in wf["nodes"].items():
-        targets = [t["target_node"] for t in node.get("transitions", [])]
+        targets = [t["target_node"] for t in node.get("transitions", []) if t.get("is_tool_call")]
         assert len(targets) == len(set(targets)) or node["node_type"] != "conversation", name
 
 
@@ -180,8 +180,8 @@ def test_no_default_collisions_and_written_vars(key: str) -> None:
         assert var in report.written_vars
     n = 3 if key == "AB" else 1
     assert (f"p{n}_promise" in report.written_vars) and (f"p{n + 1}_promise" not in report.written_vars)
-    assert len(report.to_verify) == 10 and report.to_verify[0].startswith("1.")
-    assert set(report.to_dict()) == {"warnings", "gaps", "to_verify", "written_vars", "lint"}
+    assert len(report.to_verify) == 13 and report.to_verify[0].startswith("1.")
+    assert set(report.to_dict()) == {"warnings", "gaps", "to_verify", "written_vars", "lint", "degraded"}
 
 
 @pytest.mark.parametrize("key", ["A", "AB"])
@@ -242,8 +242,9 @@ def test_closing_sources_and_exit_nodes() -> None:
     spec = spec_of("A")
     assert spoken["message_mode"]["default"] == "custom"
     assert spoken["spoken_message"]["default"] == spec.identity.on_failure.say + " " + spec.closing.goodbye_before_close.text
-    silent = wf["nodes"]["end_not_verified_declined"]["terminal"]["function"]["parameters"]["properties"]
-    assert silent["message_mode"]["default"] == "none"
+    declined = wf["nodes"]["end_not_verified_declined"]["terminal"]["function"]["parameters"]["properties"]
+    assert declined["message_mode"]["default"] == "custom"
+    assert declined["spoken_message"]["default"] == spec.closing.goodbye_before_close.text
     assert wf["nodes"]["identity"]["transitions"][0]["target_node"] == "exit_not_verified_failed_say"
     assert wf["nodes"]["negotiate"]["transitions"][1]["target_node"] == "exit_no_promise_service_error_say"
     assert wf["nodes"]["identity"]["max_turn_transition"] == "exit_not_verified_declined"
@@ -539,10 +540,14 @@ def test_scenario_single_promise_recorded() -> None:
     call = Call("A", PUB_PRODUCTS["PUB-07"])
     assert call.vars["p1_id"] == "p1" and call.vars["p1_deadline"] != ""
     call.verify_all()
-    body, data = call.promise("zzz", 9999.0, "2026-10-17")  # weekend date, amount above full
+    body, data = call.promise("zzz", 9999.0, "2026-10-17")  # weekend date, amount above full: rejected, not rewritten
+    assert body["product_id"] == "" and body["amount"] == 0 and body["date"] == ""
+    assert data["ok"] is False and "read-back" in data["what_to_do_next"] and call.vars.get("p1_promise", "") == ""
+    body, data = call.promise("zzz", 540.0, "2026-10-19")  # the id is forced, the confirmed values are kept
     assert body["product_id"] == "p1" and body["amount"] == 540.0 and body["date"] == "2026-10-19"
     assert call.vars["p1_promise"] == "recorded" and call.vars["closing_ready"] == "yes"
-    assert "text message" in data["what_to_do_next"] and "transition_to_finalize" in data["what_to_do_next"]
+    assert call.vars["auto_close"] == "yes" and "automatically" in data["what_to_do_next"]
+    assert "text message" not in data["what_to_do_next"]  # the end node speaks the confirmation sentence
     call.finalize()
     assert call.vars["final_outcome"] == "promise" and call.vars["final_reason"] == ""
     assert call.close_body() == {"customer_id": "c1", "outcome": "promise"}
@@ -616,7 +621,7 @@ def test_scenario_early_finalize_is_gated() -> None:
     call.finalize("finalize_early")
     assert call.vars.get("final_outcome", "") == "" and call.vars.get("closing_ready", "") == ""
     node = call.wf["nodes"]["finalize_early"]
-    assert [t["target_node"] for t in node["transitions"]] == ["end_final", "identity"]
+    assert [t["target_node"] for t in node["transitions"]] == ["end_final_plural", "end_final_single", "end_final", "identity"]
 
 
 @pytest.mark.parametrize("key", ["A", "AB"])
@@ -730,3 +735,34 @@ def test_account_tool_has_the_identity_gate_pre_hook(key: str) -> None:
     wf, _ = compiled(key)
     tool = wf["nodes"]["get_account"]["pre_actions"][0]
     assert "identity_state" in tool["pre_process_code"] and "blocked" in tool["pre_process_code"]
+
+
+def test_composed_opening_and_closing_nodes() -> None:
+    data = copy.deepcopy(load_fixture("spec_brief_a.json"))
+    data.pop("coverage", None)
+    data["opening"]["first_sentence"].pop("template")
+    data["opening"]["first_sentence"]["must_include"] = ["item one"]
+    data["promise_rules"]["success_sentence_plural"] = "All promises are recorded."
+    wf, report = compile_workflow(load_spec(data), copy.deepcopy(OPENAPI))
+    ident = wf["nodes"]["identity"]
+    assert ident["on_enter"] == {"type": "llm"} and ident["task_message"].startswith("Your very first message")
+    assert any("model composes it" in w for w in report.warnings)
+    wrap = wf["nodes"]["wrapup"]
+    assert wrap["max_node_turns"] == 2 and wrap["max_turn_transition"] == "finalize"
+    targets = [t["target_node"] for t in wf["nodes"]["negotiate"]["transitions"]]
+    assert targets.index("finalize") < targets.index("wrapup") < len(targets) - 1
+    plural = wf["nodes"]["end_final_plural"]["terminal"]["function"]["parameters"]["properties"]["spoken_message"]["default"]
+    assert plural.startswith("All promises are recorded.")
+
+
+def test_default_farewell_only_for_english_and_required() -> None:
+    data = copy.deepcopy(load_fixture("spec_brief_a.json"))
+    data.pop("coverage", None)
+    data["closing"]["goodbye_before_close"] = {"required": True}
+    wf, report = compile_workflow(load_spec(data), copy.deepcopy(OPENAPI))
+    spoken = wf["nodes"]["end_final"]["terminal"]["function"]["parameters"]["properties"]["spoken_message"]["default"]
+    assert spoken == compiler.DEFAULT_FAREWELL_EN and any("default farewell" in w for w in report.warnings)
+    data["meta"]["language"] = "xx"
+    wf, report = compile_workflow(load_spec(data), copy.deepcopy(OPENAPI))
+    assert wf["nodes"]["end_final"]["terminal"]["function"]["parameters"]["properties"]["message_mode"]["default"] == "none"
+    assert any("end nodes are silent" in g for g in report.gaps)

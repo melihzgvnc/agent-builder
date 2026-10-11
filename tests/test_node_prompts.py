@@ -317,3 +317,60 @@ def test_amounts_read_back_rule_only_when_floor_offered_once() -> None:
         def edit(d: dict[str, Any], v: Any = value) -> None:
             d["amounts"]["too_much"]["offer_floor_times"] = v
         assert marker not in "\n".join(node_prompts._amount_lines(mutated(SPEC_A_DICT, edit)))
+
+
+def _spec_with_calendar(weekend: list[str], start: str, holidays: list[str]) -> Any:
+    d = copy.deepcopy(SPEC_AB_DICT)
+    d["calendar"]["weekend_days"] = weekend
+    d["calendar"]["week_starts_on"] = start
+    d["calendar"]["holidays"] = holidays
+    return load_spec(d)
+
+
+def test_business_week_follows_the_spec_calendar() -> None:
+    sun_thu = node_prompts.business_week_text(_spec_with_calendar(["friday", "saturday"], "sunday", []))
+    assert sun_thu == "Business days are Sunday, Monday, Tuesday, Wednesday, Thursday; Friday, Saturday are never business days."
+    mon_fri = node_prompts.business_week_text(_spec_with_calendar(["saturday", "sunday"], "monday", []))
+    assert mon_fri.startswith("Business days are Monday, Tuesday, Wednesday, Thursday, Friday;")
+
+
+def test_holidays_get_computed_weekday_names() -> None:
+    spec = _spec_with_calendar(["saturday", "sunday"], "monday", ["2026-10-19"])
+    assert node_prompts.holidays_with_weekdays(spec) == ["Monday 2026-10-19"]
+
+
+def test_date_lines_carry_the_listed_dates_rule() -> None:
+    text = "\n".join(node_prompts._date_lines(SPEC_AB))
+    assert "never work out a weekday yourself" in text
+
+
+def test_multi_product_loop_present_only_for_multi() -> None:
+    ctx = PromptCtx(tools={"create_promise": "create_promise", "add_note": "add_note"},
+                    fields={"add_note": {"product": "product_id", "reason": "reason"}}, uses_notes=True)
+    multi = "\n".join(node_prompts._multi_lines(SPEC_AB, ctx))
+    assert "one at a time, in the order of the product facts" in multi
+    assert node_prompts._multi_lines(SPEC_A, ctx) == []
+
+
+def test_opening_modes_and_directive() -> None:
+    assert node_prompts.opening_mode(SPEC_A) == "fixed"
+    assert node_prompts.opening_directive(SPEC_A) == ""
+    composed = mutated(SPEC_A_DICT, lambda d: (d["opening"]["first_sentence"].pop("template"), d["opening"]["first_sentence"].update(must_include=["item one", "item two"])))
+    assert node_prompts.opening_mode(composed) == "composed"
+    directive = node_prompts.opening_directive(composed)
+    assert "item one | item two" in directive and directive.index("item two") < directive.index("ask exactly")
+    assert node_prompts.identity_task(composed, id_ctx(composed)).startswith(directive)
+    no_first = mutated(SPEC_A_DICT, lambda d: d["opening"].pop("first_sentence"))
+    assert node_prompts.opening_mode(no_first) == "question_only"
+    assert "comes before any other utterance" in node_prompts.identity_task(SPEC_A, id_ctx(SPEC_A))
+
+
+def test_auto_farewell_removes_goodbye_instructions() -> None:
+    ctx = neg_ctx(SPEC_A)
+    assert "goodbye" in node_prompts.negotiate_task(SPEC_A, ctx).lower()
+    ctx.farewell_auto = ctx.auto_close = True
+    ctx.auto_drop_texts = (SPEC_A.closing.goodbye_before_close.text, SPEC_A.promise_rules.success_sentence)
+    text = node_prompts.negotiate_task(SPEC_A, ctx)
+    assert "say the goodbye text" not in text and "ends by itself" in text
+    assert SPEC_A.promise_rules.success_sentence not in text
+    assert "The goodbye is spoken automatically" in node_prompts.wrapup_task(SPEC_A, ctx)

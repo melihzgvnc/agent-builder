@@ -113,3 +113,16 @@ def test_read_back_differences_reach_warnings(tmp_path: Path) -> None:
     _, run_dir = _build(tmp_path, c, dry=False)
     text = (run_dir / "trace.log").read_text(encoding="utf-8")
     assert "read_back: stripped system_prompt" in text
+
+
+def test_rehearsal_spec_writes_degraded_line_and_list(tmp_path: Path) -> None:
+    dirs: list[Path] = []
+    code = run_build(
+        root=tmp_path, briefs=[REPO_ROOT / "briefs" / "brief-a.md"], openapi=REPO_ROOT / "tools" / "openapi.json",
+        slot="slot-r", dry=True, cases=None, runs_dir=tmp_path / "runs", on_run_dir=dirs.append,
+        spec_path=FIXTURES_DIR / "spec_rehearsal.json", client=FakeFreya(),
+    )
+    assert code == 0
+    assert "DEGRADED: compile: unstructured rule (deadline_formula)" in (dirs[0] / "trace.log").read_text(encoding="utf-8")
+    report = json.loads((dirs[0] / "compile_report.json").read_text(encoding="utf-8"))
+    assert len(report["degraded"]) >= 4

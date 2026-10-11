@@ -39,6 +39,14 @@ BANNED_TOKENS: tuple[str, ...] = (
     "can you make this payment today",
     "i am sorry for your loss",
     "you will receive a text message",
+    "cedar ridge",
+    "harvest day",
+    "lantern day",
+    "founders' day",
+    "digital assistant",
+    "summit bank",
+    "apex trust",
+    "river bank",
 )
 
 

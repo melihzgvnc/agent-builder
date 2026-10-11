@@ -446,3 +446,19 @@ def test_lint_stage_without_workflow_is_skipped(tmp_path: Path) -> None:
     code, text = _run_with_workflow(tmp_path, None)
     assert code == 0
     assert "lint: skipped" in text
+
+
+def _with_task(text: str) -> list[Finding]:
+    w = clean()
+    w["nodes"]["talk"]["task_message"] = text + " Use the tool."
+    return lint(w)
+
+
+def test_repeat_counts_conflict_is_warned() -> None:
+    found = _with_task("Offer the reduced amount once. Offer the reduced amount to the customer twice.")
+    assert rules(found, "warn") == {"repeat_counts"}
+
+
+def test_repeat_counts_same_count_or_other_topic_is_quiet() -> None:
+    assert _with_task("Offer the reduced amount twice. Offer the reduced amount twice.") == []
+    assert _with_task("Offer the reduced amount once. Ask for the security answer twice.") == []

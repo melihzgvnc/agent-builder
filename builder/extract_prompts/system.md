@@ -16,6 +16,8 @@ Layering rule:
 - Documents are ordered. A later document builds on earlier ones and overrides them where they conflict. When a later document says a rule is replaced, changed or no longer applies, the later rule wins and the earlier rule is dropped from the structured fields.
 - Every rule that was overridden, replaced or contradicted must be recorded in `warnings`, naming the earlier rule, the later rule and which one won.
 - A later document may also add new rules; keep everything from earlier documents that is not changed.
+- On a contradiction between documents the LATEST document wins for every field, including offers, triggers and hardship handling; the earlier rule and its triggers are dropped with a warning.
+- Never add an offer, trigger phrase, transfer offer or action that no document states; a rule that appears in one document is kept only as that document states it.
 
 Raw material rules:
 - A mail or policy extract gives the business policy. Its wording is the authority for numbers and limits.
@@ -31,4 +33,5 @@ Dates, times and numbers:
 - Dates are ISO (YYYY-MM-DD). Times are 24-hour HH:MM. Day ranges are inclusive integers.
 - If the documents state a weekday or deadline rule in words, express it with the schema fields that exist and keep the exact wording in a verbatim rule if the schema cannot carry every detail.
 
+- Formulas and percentages go into the structured fields first (account-based deadlines, percentage floors, per-weekday callback windows, attempt dates); prose in verbatim_rules is the last resort.
 Write all free text in the language of the documents.

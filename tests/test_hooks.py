@@ -402,36 +402,41 @@ def promise_body(**kw: Any) -> dict[str, Any]:
     return body
 
 
+def assert_rejected(v: dict[str, Any], body: dict[str, Any], *fields: str) -> None:
+    assert v["promise_guard"] == "rejected" and v["promise_changed"] == "rejected"
+    assert body["product_id"] == ""
+    for name in fields:
+        assert body[name] in ("", 0)
+
+
 @pytest.mark.parametrize(("case", "spec"), [("PUB-07", SPEC_A), ("PUB-04", SPEC_A), ("PUB-13", SPEC_AB)])
-def test_promise_date_clamp_agrees_with_engine(case: str, spec: dict[str, Any]) -> None:
+def test_promise_date_is_kept_or_rejected_like_engine(case: str, spec: dict[str, Any]) -> None:
     src = hooks.promise_pre_hook(promise_cfg(spec))
     cal = engine.make_calendar(spec)
     base = facts_vars(PUB_PRODUCTS[case], spec)
     for idx in range(1, len(PUB_PRODUCTS[case]) + 1):
         deadline = date.fromisoformat(base[f"p{idx}_deadline"])
-        first = base["business_days"].split(",")[0]
-        assert first == TODAY.isoformat()
         d = TODAY - timedelta(days=4)
         while d <= TODAY + timedelta(days=30):
-            v = dict(base)
             body = promise_body(product_id=base[f"p{idx}_id"], date=d.isoformat(), amount=base[f"p{idx}_full"])
-            v, cfg, _ = run(src, v, config={"body": body})
-            res = engine.check_promise_date(d, TODAY, deadline, cal)
-            expected = first if res["status"] in ("past", "invalid") else res["date"]
-            if len(PUB_PRODUCTS[case]) > 1:
-                # several products: the hook chooses the one the id names
+            v, cfg, _ = run(src, dict(base), config={"body": body})
+            status = engine.check_promise_date(d, TODAY, deadline, cal)["status"]
+            if status == "ok":
+                assert cfg["body"]["date"] == d.isoformat() and v["promise_guard"] == ""
                 assert cfg["body"]["product_id"] == base[f"p{idx}_id"]
-            assert cfg["body"]["date"] == expected, (case, idx, d, res)
-            assert v["promise_sent_date"] == expected
+            else:
+                assert_rejected(v, cfg["body"], "date")
+                assert v["promise_limit_date"] <= deadline.isoformat()
+                assert v["promise_limit_date"] in base["business_days"].split(",")
             d += timedelta(days=1)
 
 
 @pytest.mark.parametrize("bad", ["garbage", "", "2026-13-45x", "15/10/2026", None, 5])
-def test_promise_invalid_date_gets_first_day(bad: object) -> None:
+def test_promise_invalid_date_is_rejected(bad: object) -> None:
     v = facts_vars(PUB_PRODUCTS["PUB-07"], SPEC_A)
-    v, cfg, _ = run(PROMISE_PRE_A, v, config={"body": promise_body(date=bad)})
-    assert cfg["body"]["date"] == "2026-10-14"
-    assert v["promise_changed"] == "yes"
+    v, cfg, _ = run(PROMISE_PRE_A, v, config={"body": promise_body(date=bad, amount=v["p1_full"])})
+    assert_rejected(v, cfg["body"], "date")
+    assert v["promise_reject"] == "date_invalid"
 
 
 AMOUNT_CASES: list[tuple[object, str]] = [
@@ -442,67 +447,77 @@ AMOUNT_CASES: list[tuple[object, str]] = [
 
 
 @pytest.mark.parametrize(("amount", "kind"), AMOUNT_CASES)
-def test_promise_amount_clamp_agrees_with_classify(amount: object, kind: str) -> None:
+def test_promise_amount_is_kept_or_rejected_like_classify(amount: object, kind: str) -> None:
     v = facts_vars(PUB_PRODUCTS["PUB-06"], SPEC_A)
     full, floor = v["p1_full"], v["p1_floor"]
     assert (full, floor) == (2125.1, 637.5)
     assert engine.classify_amount(amount, full, floor) == kind
-    v, cfg, _ = run(PROMISE_PRE_A, v, config={"body": promise_body(amount=amount)})
-    expected = {"full": full, "above_full": full, "invalid": full, "below_floor": floor}.get(kind, None)
-    if expected is None:
-        expected = float(amount)  # type: ignore[arg-type]
-    assert cfg["body"]["amount"] == expected
-    assert v["promise_sent_amount"] == expected
-    assert v["promise_changed"] == ("no" if kind in ("full", "in_range") else "yes")
+    v, cfg, _ = run(PROMISE_PRE_A, v, config={"body": promise_body(amount=amount, date="2026-10-19")})
+    if kind in ("full", "in_range"):
+        assert cfg["body"]["amount"] == amount and v["promise_guard"] == ""
+    else:
+        assert_rejected(v, cfg["body"], "amount")
+        assert cfg["body"]["date"] == "2026-10-19"
+        limit = {"above_full": full, "below_floor": floor}.get(kind, "")
+        assert v["promise_limit_amount"] == limit
 
 
-def test_promise_amount_floor_unknown_and_full_unknown() -> None:
+def test_promise_unknown_facts_pass_through_unchanged() -> None:
     v = facts_vars(PUB_PRODUCTS["PUB-06"], SPEC_A)
-    v["p1_floor"] = ""
-    _, cfg, _ = run(PROMISE_PRE_A, dict(v), config={"body": promise_body(amount=100.0)})
-    assert cfg["body"]["amount"] == 2125.1
-    _, cfg, _ = run(PROMISE_PRE_A, dict(v), config={"body": promise_body(amount=3000.0)})
-    assert cfg["body"]["amount"] == 2125.1
-    v["p1_full"] = ""
-    v2, cfg, _ = run(PROMISE_PRE_A, dict(v), config={"body": promise_body(amount=100.0)})
-    assert cfg["body"]["amount"] == 100.0 and v2["promise_guard"] == "skipped"
+    for name in ("p1_floor", "p1_full", "p1_deadline", "business_days"):
+        v[name] = ""
+    body = promise_body(amount=100.0, date="2026-10-17")
+    v2, cfg, _ = run(PROMISE_PRE_A, dict(v), config={"body": dict(body, product_id="p1")})
+    assert cfg["body"] == dict(body, product_id="p1")
+    assert v2["promise_guard"] == "" and v2["promise_unchecked"] == "date,amount"
+    assert "unknown" not in str(cfg["body"])
+    garbage = facts_vars(PUB_PRODUCTS["PUB-07"], SPEC_A, now="garbage")
+    assert garbage["business_days"] == "" and garbage["p1_deadline"] == ""
+    _, cfg, _ = run(PROMISE_PRE_A, garbage, config={"body": promise_body(date="2026-10-17")})
+    assert cfg["body"]["date"] == "2026-10-17"
 
 
-def test_promise_rounding_follows_spec_decimals() -> None:
+def test_promise_body_is_asked_or_blank_property() -> None:
+    rng = random.Random(7)
+    for _ in range(300):
+        v = facts_vars(PUB_PRODUCTS["PUB-06"], SPEC_A)
+        for name in rng.sample(["p1_floor", "p1_full", "p1_deadline", "business_days", "today"], rng.randint(0, 3)):
+            v[name] = ""
+        asked_date = (TODAY + timedelta(days=rng.randint(-5, 25))).isoformat()
+        asked_amt = rng.choice([0, -1, 100.0, 637.5, 900.25, 2125.1, 4000.0, "x"])
+        body = promise_body(date=asked_date, amount=asked_amt, product_id="p1")
+        v, cfg, _ = run(PROMISE_PRE_A, v, config={"body": dict(body)})
+        out = cfg["body"]
+        assert "unknown" not in str(out)
+        if v["promise_guard"] == "rejected":
+            assert out["product_id"] == "" and out["date"] in ("", asked_date) and out["amount"] in (0, asked_amt)
+        else:
+            assert out == body
+
+
+def test_promise_rounding_decimals_honoured_in_limit_text() -> None:
     spec = copy.deepcopy(SPEC_A)
     spec["amounts"]["rounding_decimals"] = 0
-    src = hooks.promise_pre_hook(promise_cfg(spec))
+    cfg = promise_cfg(spec)
     v = facts_vars(PUB_PRODUCTS["PUB-06"], spec)
-    _, cfg, _ = run(src, v, config={"body": promise_body(amount=900.4)})
-    assert cfg["body"]["amount"] == 900.0
-
-
-def test_promise_deadline_unknown_leaves_date() -> None:
-    v = facts_vars(PUB_PRODUCTS["PUB-07"], SPEC_A, now="garbage")
-    assert v["business_days"] == "" and v["p1_deadline"] == ""
-    v, cfg, _ = run(PROMISE_PRE_A, v, config={"body": promise_body(date="2026-10-17")})
-    assert cfg["body"]["date"] == "2026-10-17" and v["promise_guard"] == "skipped"
-
-
-def test_promise_body_field_names_follow_cfg() -> None:
-    cfg = promise_cfg(SPEC_A)
-    cfg["fields"] = {"product": "pid", "amount": "sum", "date": "when"}
-    v = facts_vars(PUB_PRODUCTS["PUB-06"], SPEC_A)
-    _, out, _ = run(hooks.promise_pre_hook(cfg), v, config={"body": {"pid": "x", "sum": 1.0, "when": "2026-10-17"}})
-    assert out["body"] == {"pid": "p1", "sum": 637.5, "when": "2026-10-19"}
+    v, _, _ = run(hooks.promise_pre_hook(cfg), v, config={"body": promise_body(amount=10.0, date="2026-10-19")})
+    v, _, res = run(hooks.promise_post_hook(cfg), v, result={"data": {"ok": True}})
+    assert "at least" not in res["data"]["what_to_do_next"] and v["p1_promise_rejects"] == 1
+    assert f"{round(v['promise_limit_amount']):d}" in res["data"]["what_to_do_next"]
 
 
 def test_promise_multi_product_id_forcing() -> None:
     base = facts_vars(PUB_PRODUCTS["PUB-12"], SPEC_AB)
+    BIG = base["p1_full"]
     # the model names a real product: kept
     v, cfg, _ = run(PROMISE_PRE_AB, dict(base), config={"body": promise_body(product_id="p2", amount=base["p2_full"])})
     assert cfg["body"]["product_id"] == "p2" and v["promise_idx"] == 2
     # unknown id: first product still pending
-    v, cfg, _ = run(PROMISE_PRE_AB, dict(base), config={"body": promise_body(product_id="zzz", amount=1.0)})
+    v, cfg, _ = run(PROMISE_PRE_AB, dict(base), config={"body": promise_body(product_id="zzz", amount=BIG)})
     assert cfg["body"]["product_id"] == "p1" and v["promise_idx"] == 1
     # p1 recorded, p2 noted: p3
     pending = dict(base, p1_promise="recorded", p2_note="refused")
-    v, cfg, _ = run(PROMISE_PRE_AB, pending, config={"body": promise_body(product_id="zzz", amount=1.0)})
+    v, cfg, _ = run(PROMISE_PRE_AB, pending, config={"body": promise_body(product_id="zzz", amount=base["p3_full"])})
     assert cfg["body"]["product_id"] == "p3" and v["promise_idx"] == 3
     # everything handled: nothing to choose, request unchanged
     done = dict(base, p1_promise="recorded", p2_note="refused", p3_promise="recorded")
@@ -510,17 +525,29 @@ def test_promise_multi_product_id_forcing() -> None:
     assert cfg["body"]["product_id"] == "zzz" and v["promise_guard"] == "skipped"
     # single product: always product 1
     single = facts_vars(PUB_PRODUCTS["PUB-07"], SPEC_A)
-    v, cfg, _ = run(PROMISE_PRE_A, single, config={"body": promise_body(product_id="anything")})
+    v, cfg, _ = run(PROMISE_PRE_A, single, config={"body": promise_body(product_id="anything", amount=single["p1_full"])})
     assert cfg["body"]["product_id"] == "p1"
 
 
 def test_promise_changed_flag() -> None:
     v = facts_vars(PUB_PRODUCTS["PUB-07"], SPEC_A)
     v, cfg, _ = run(PROMISE_PRE_A, v, config={"body": promise_body(amount=540.0, date="2026-10-15")})
-    assert v["promise_changed"] == "no"
+    assert v["promise_changed"] == "no" and v["promise_reject"] == ""
     assert (v["promise_asked_date"], v["promise_asked_amount"]) == ("2026-10-15", 540.0)
     v, cfg, _ = run(PROMISE_PRE_A, v, config={"body": promise_body(amount=540.0, date="2026-10-17")})
-    assert v["promise_changed"] == "yes" and cfg["body"]["date"] == "2026-10-19"
+    assert v["promise_changed"] == "rejected" and cfg["body"]["date"] == ""
+    assert v["promise_reject"] == "date_not_business_day" and v["promise_limit_date"] == "2026-10-19"
+
+
+def test_promise_multi_product_per_product_limits() -> None:
+    base = facts_vars(PUB_PRODUCTS["PUB-12"], SPEC_AB)
+    late = max(base[f"p{i}_deadline"] for i in (1, 2, 3))
+    early = min(base[f"p{i}_deadline"] for i in (1, 2, 3))
+    k = [i for i in (1, 2, 3) if base[f"p{i}_deadline"] == early][0]
+    if early != late:
+        body = promise_body(product_id=f"p{k}", date=late, amount=base[f"p{k}_full"])
+        v, cfg, _ = run(PROMISE_PRE_AB, dict(base), config={"body": body})
+        assert v["promise_idx"] == k and v["promise_limit_date"] <= early
 
 
 # ---------------------------------------------------------------------------------------------
@@ -552,13 +579,20 @@ def test_promise_post_single_recorded() -> None:
     assert "differ" not in text
 
 
-def test_promise_post_states_actual_values_when_changed() -> None:
+def test_promise_post_rejected_asks_for_new_readback_and_keeps_retries() -> None:
     v = facts_vars(PUB_PRODUCTS["PUB-06"], SPEC_A)
-    v, data = promise_round(PROMISE_PRE_A, PROMISE_POST_A, v, promise_body(amount=100.0, date="2026-10-17"), True)
-    text = data["what_to_do_next"]
-    assert "637.50 on 2026-10-19" in text and "differ from what the customer asked" in text
-    assert "Asked: 100.00 on 2026-10-17" in text
-    assert v["p1_promise_amount"] == 637.5
+    for n in (1, 2):
+        v, data = promise_round(PROMISE_PRE_A, PROMISE_POST_A, v, promise_body(amount=100.0, date="2026-10-19"), True)
+        assert data["ok"] is False and v["p1_promise_rejects"] == n
+        assert "637.50" in data["what_to_do_next"] and "read-back" in data["what_to_do_next"]
+        assert v.get("p1_promise", "") == "" and v.get("p1_promise_fails", 0) == 0
+    v, data = promise_round(PROMISE_PRE_A, PROMISE_POST_A, v, promise_body(amount=100.0, date="2026-10-19"), True)
+    assert v["promise_state"] == "write_failed" and "read-back" not in data["what_to_do_next"]
+    # a confirmed in-range value afterwards is recorded exactly as asked
+    v = facts_vars(PUB_PRODUCTS["PUB-06"], SPEC_A)
+    v, data = promise_round(PROMISE_PRE_A, PROMISE_POST_A, v, promise_body(amount=700.0, date="2026-10-19"), True)
+    assert (v["p1_promise_date"], v["p1_promise_amount"]) == ("2026-10-19", 700.0)
+    assert "differ" not in data["what_to_do_next"]
 
 
 def test_promise_post_failure_paths_single() -> None:
@@ -919,4 +953,50 @@ def test_pre_hooks_block_when_identity_failed(spec: dict[str, Any], layout: str)
         assert cfg["body"][field] == "" and v[guard] == "blocked"
         for state in ({"identity_state": "pending"}, {"identity_state": "verified"}, {}):
             v, cfg, _ = run(src, dict(base, **state), config={"body": dict(body)}, layout=layout)
-            assert cfg["body"][field] != "" and guard not in v
+            assert cfg["body"][field] != "" and v.get(guard, "") != "blocked"
+
+
+def test_callback_per_weekday_hook_agrees_with_engine_and_hours_text() -> None:
+    spec = copy.deepcopy(SPEC_A)
+    w = spec["third_party"]["callback_window"]
+    w["days"]["n"] = 4
+    w["per_weekday"] = [{"weekdays": ["thursday"], "hour_start": "10:00", "hour_end": "12:00", "inclusive": False}]
+    cfg = callback_cfg(spec)
+    cfg["windows"] = [[engine.WEEKDAYS.index("thursday"), "10:00", "12:00", False]]
+    cfg["weekday_names"] = list(engine.WEEKDAYS)
+    src = hooks.callback_pre_hook(cfg)
+    cal = engine.make_calendar(spec)
+    now_dt = engine.parse_now(NOW)
+    base = facts_vars([], spec)
+    dates = engine.allowed_callback_dates(now_dt.date(), spec, cal)
+    for d in dates:
+        for t in ["09:30", "10:00", "11:59", "12:00", "15:00", "19:00"]:
+            v, out, _ = run(src, dict(base), config={"body": {"date": d.isoformat(), "time": t}})
+            proposed = engine.parse_now(d.isoformat() + "T" + t)
+            ok = engine.check_callback(proposed, now_dt, spec, cal)["status"] == "ok"
+            assert (out["body"]["date"] != "") == ok, (d, t)
+    assert v["callback_hours"] == engine.callback_hours_text(dates, spec)
+
+
+def test_promise_post_auto_close_sets_flag_and_skips_success_sentence() -> None:
+    cfg = {**promise_cfg(SPEC_A), "auto_close": True, "farewell_auto": True}
+    pre, post = hooks.promise_pre_hook(cfg), hooks.promise_post_hook(cfg)
+    v = facts_vars(PUB_PRODUCTS["PUB-07"], SPEC_A)
+    v, data = promise_round(pre, post, v, promise_body(amount=540.0, date="2026-10-15"), True)
+    assert v["auto_close"] == "yes" and v["closing_ready"] == "yes"
+    assert "automatically" in data["what_to_do_next"] and "text message" not in data["what_to_do_next"]
+    assert GOODBYE not in data["what_to_do_next"]
+
+
+def test_finalize_closing_variant() -> None:
+    src = hooks.finalize_source({**final_cfg(SPEC_AB), "confirm_single": True, "confirm_plural": True}, force=False)
+    v, _, _ = run(src, multi_vars({1: "recorded"}, closing_ready="yes"))
+    assert v["closing_variant"] == "single"
+    v, _, _ = run(src, multi_vars({1: "recorded", 2: "recorded"}, closing_ready="yes"))
+    assert v["closing_variant"] == "plural"
+    v, _, _ = run(src, multi_vars({1: "recorded"}, closing_ready="yes", transfer_reason="restructuring"))
+    assert v["closing_variant"] == ""
+    v, _, _ = run(src, multi_vars({}, {1: "paid", 2: "paid", 3: "paid"}, closing_ready="yes"))
+    assert v["closing_variant"] == ""
+    v, _, _ = run(FINALIZE_AB, multi_vars({1: "recorded"}, closing_ready="yes"))
+    assert v["closing_variant"] == ""

@@ -331,3 +331,196 @@ def test_closing_close_tool_optional_round_trip() -> None:
     assert load_spec(dumped) == spec
     data["closing"]["close_tool"] = 5
     assert validate_spec(data) == ["closing.close_tool: expected string"]
+
+
+# ---------------------------------------------------------------------------------------------
+# Optional fields: account-based deadlines, percent floors, per-weekday windows, attempt date_n
+# ---------------------------------------------------------------------------------------------
+
+NEW_KEYS: tuple[str, ...] = (
+    "due_date",
+    "base",
+    "floor_percent",
+    "floor_default_percent",
+    "rounding_mode",
+    "date_n",
+    "per_weekday",
+    "success_sentence_plural",
+    "gap_kind",
+)
+OLD_FIXTURES: tuple[str, ...] = (
+    "spec_brief_a.json",
+    "spec_brief_ab.json",
+    "spec_variant_1.json",
+    "spec_variant_2.json",
+    "spec_variant_3.json",
+)
+
+
+def _keys(value: object) -> set[str]:
+    if isinstance(value, dict):
+        out = set(value)
+        for v in value.values():
+            out |= _keys(v)
+        return out
+    if isinstance(value, list):
+        out = set()
+        for v in value:
+            out |= _keys(v)
+        return out
+    return set()
+
+
+def spec_with_all_new_fields() -> dict[str, Any]:
+    """spec_brief_ab plus every optional field of this change, with neutral values."""
+    d = copy.deepcopy(load_fixture("spec_brief_ab.json"))
+    d["account_fields"]["due_date"] = "due_on"
+    d["bands"][0]["deadline"] = {"kind": "business_days_after_base", "n": 3, "base": "due_date_field"}
+    d["bands"][1]["deadline"] = {
+        "kind": "calendar_days_after_base", "n": 5, "base": "days_late_field", "roll": "next_business_day"
+    }
+    d["amounts"]["floor_percent"] = {"credit_card": {"percent": 12.5, "of_field": "balance_x"}}
+    d["amounts"]["floor_default_percent"] = {"percent": 30, "of_field": "balance_x"}
+    d["amounts"]["rounding_mode"] = "half_even"
+    d["persuasion"]["attempts"][1]["date_rule"] = "business_days_after_today"
+    d["persuasion"]["attempts"][1]["date_n"] = 2
+    d["third_party"]["callback_window"]["per_weekday"] = [
+        {"weekdays": ["friday"], "hour_start": "09:00", "hour_end": "13:00", "inclusive": False},
+        {"weekdays": ["monday", "tuesday"], "hour_start": "11:00", "hour_end": "15:00"},
+    ]
+    d["promise_rules"]["success_sentence_plural"] = "All promises were recorded."
+    d["verbatim_rules"][0]["gap_kind"] = "amount_floor"
+    return d
+
+
+def test_spec_with_all_new_fields_validates_and_round_trips() -> None:
+    d = spec_with_all_new_fields()
+    assert validate_spec(d) == []
+    present = _keys(d)
+    assert set(NEW_KEYS) <= present
+    spec = load_spec(d)
+    dumped = spec_to_dict(spec)
+    assert not _contains_none(dumped)
+    assert set(NEW_KEYS) <= _keys(dumped)
+    assert dumped["account_fields"]["due_date"] == "due_on"
+    assert dumped["persuasion"]["attempts"][1]["date_n"] == 2
+    assert dumped["promise_rules"]["success_sentence_plural"] == d["promise_rules"]["success_sentence_plural"]
+    assert dumped["verbatim_rules"][0]["gap_kind"] == "amount_floor"
+    assert dumped["third_party"]["callback_window"]["per_weekday"] == d["third_party"]["callback_window"]["per_weekday"]
+    assert dumped["bands"][0]["deadline"] == {**d["bands"][0]["deadline"], "roll": "none"}
+    assert dumped["bands"][1]["deadline"] == d["bands"][1]["deadline"]
+    assert dumped["amounts"]["floor_percent"] == d["amounts"]["floor_percent"]
+    assert dumped["amounts"]["floor_default_percent"] == d["amounts"]["floor_default_percent"]
+    assert dumped["amounts"]["rounding_mode"] == "half_even"
+    assert spec_to_dict(load_spec(dumped)) == dumped
+    assert load_spec(dumped) == spec
+    assert spec.bands[0].deadline.base == "due_date_field"
+    assert spec.amounts.floor_percent["credit_card"].of_field == "balance_x"
+    assert spec.amounts.floor_default_percent.percent == 30
+    assert spec.third_party.callback_window.per_weekday[1].weekdays == ["monday", "tuesday"]
+    assert spec.persuasion.attempts[1].date_n == 2
+
+
+@pytest.mark.parametrize("name", OLD_FIXTURES)
+def test_old_fixtures_use_no_new_field(name: str) -> None:
+    data = load_fixture(name)
+    assert not (_keys(data) & set(NEW_KEYS))
+    dumped = spec_to_dict(load_spec(data))
+    assert not (_keys(dumped) & set(NEW_KEYS))
+    assert spec_to_dict(load_spec(dumped)) == dumped
+
+
+def _bands_deadline(**kw: Any) -> Callable[[dict[str, Any]], None]:
+    def mutate(d: dict[str, Any]) -> None:
+        d["bands"][0]["deadline"] = kw
+
+    return mutate
+
+
+def _remove_account_field(name: str) -> Callable[[dict[str, Any]], None]:
+    def mutate(d: dict[str, Any]) -> None:
+        del d["account_fields"][name]
+
+    return mutate
+
+
+def _chain(*steps: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any]], None]:
+    def mutate(d: dict[str, Any]) -> None:
+        for step in steps:
+            step(d)
+
+    return mutate
+
+
+NEW_FIELD_MALFORMED: list[tuple[str, Callable[[dict[str, Any]], None], str]] = [
+    ("base kind without base", _bands_deadline(kind="business_days_after_base", n=1),
+     "bands[0].deadline.base: required"),
+    ("base with old kind", _bands_deadline(kind="business_days_after_today", n=1, base="due_date_field"),
+     "bands[0].deadline.base: only allowed with a *_after_base kind"),
+    ("unknown base", _bands_deadline(kind="calendar_days_after_base", n=1, base="elsewhere"),
+     "bands[0].deadline.base: must be one of [due_date_field, days_late_field]"),
+    ("due date field not mapped",
+     _chain(_bands_deadline(kind="business_days_after_base", n=1, base="due_date_field")),
+     "bands[0].deadline.base: due_date_field needs account_fields.due_date"),
+    ("days late field not mapped",
+     _chain(_remove_account_field("days_late"),
+            _bands_deadline(kind="business_days_after_base", n=1, base="days_late_field")),
+     "bands[0].deadline.base: days_late_field needs account_fields.days_late"),
+    ("percent zero", _set(["amounts", "floor_default_percent"], {"percent": 0, "of_field": "f"}),
+     "amounts.floor_default_percent.percent"),
+    ("percent above 100", _set(["amounts", "floor_percent"], {"credit_card": {"percent": 101, "of_field": "f"}}),
+     "amounts.floor_percent.credit_card.percent"),
+    ("percent without field", _set(["amounts", "floor_default_percent"], {"percent": 10}),
+     "amounts.floor_default_percent.of_field: required"),
+    ("unknown rounding mode", _set(["amounts", "rounding_mode"], "banker"), "amounts.rounding_mode: must be one of"),
+    ("date_n without rule", _set(["persuasion", "attempts", 0, "date_n"], 2),
+     "persuasion.attempts[0].date_n: only allowed with date_rule business_days_after_today"),
+    ("rule without date_n", _set(["persuasion", "attempts", 0, "date_rule"], "business_days_after_today"),
+     "persuasion.attempts[0].date_n: required with date_rule business_days_after_today"),
+    ("negative date_n", _chain(_set(["persuasion", "attempts", 0, "date_rule"], "business_days_after_today"),
+                               _set(["persuasion", "attempts", 0, "date_n"], -1)),
+     "persuasion.attempts[0].date_n"),
+    ("weekday listed twice across entries",
+     _set(["third_party", "callback_window", "per_weekday"], [
+         {"weekdays": ["friday"], "hour_start": "09:00", "hour_end": "12:00"},
+         {"weekdays": ["monday", "friday"], "hour_start": "10:00", "hour_end": "12:00"}]),
+     "third_party.callback_window.per_weekday[1].weekdays: weekday 'friday' listed twice"),
+    ("weekday listed twice in one entry",
+     _set(["third_party", "callback_window", "per_weekday"], [
+         {"weekdays": ["friday", "friday"], "hour_start": "09:00", "hour_end": "12:00"}]),
+     "third_party.callback_window.per_weekday[0].weekdays: weekday 'friday' listed twice"),
+    ("per weekday end before start",
+     _set(["third_party", "callback_window", "per_weekday"], [
+         {"weekdays": ["friday"], "hour_start": "12:00", "hour_end": "09:00"}]),
+     "third_party.callback_window.per_weekday[0].hour_end: before hour_start"),
+    ("per weekday empty", _set(["third_party", "callback_window", "per_weekday"], []),
+     "third_party.callback_window.per_weekday"),
+    ("per weekday bad day", _set(["third_party", "callback_window", "per_weekday"], [
+        {"weekdays": ["someday"], "hour_start": "09:00", "hour_end": "12:00"}]),
+     "third_party.callback_window.per_weekday[0].weekdays[0]: must be one of"),
+    ("unknown gap kind", _set(["verbatim_rules", 0, "gap_kind"], "other"), "verbatim_rules[0].gap_kind: must be one of"),
+    ("plural sentence not a string", _set(["promise_rules", "success_sentence_plural"], 4),
+     "promise_rules.success_sentence_plural: expected string"),
+    ("due date not a string", _set(["account_fields", "due_date"], 4), "account_fields.due_date: expected string"),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate", "expected"), NEW_FIELD_MALFORMED, ids=[m[0] for m in NEW_FIELD_MALFORMED]
+)
+def test_new_field_malformed(label: str, mutate: Callable[[dict[str, Any]], None], expected: str) -> None:
+    d = copy.deepcopy(load_fixture("spec_brief_ab.json"))
+    mutate(d)
+    errors = validate_spec(d)
+    assert any(e.startswith(expected) for e in errors), (label, errors)
+    with pytest.raises(SpecError):
+        load_spec(d)
+
+
+def test_new_deadline_kinds_validate_with_their_base() -> None:
+    d = copy.deepcopy(load_fixture("spec_brief_ab.json"))
+    d["account_fields"]["due_date"] = "due_on"
+    for kind in ("business_days_after_base", "calendar_days_after_base"):
+        for base in ("due_date_field", "days_late_field"):
+            d["bands"][0]["deadline"] = {"kind": kind, "n": 2, "base": base}
+            assert validate_spec(d) == [], (kind, base)

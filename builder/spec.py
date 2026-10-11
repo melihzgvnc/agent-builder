@@ -77,6 +77,7 @@ class AccountFields:
     product_type: str | None = None
     days_late: str | None = None
     products_key: str | None = None
+    due_date: str | None = None
 
 
 @dataclass
@@ -107,12 +108,21 @@ class CallbackDays:
 
 
 @dataclass
+class PerWeekdayWindow:
+    weekdays: list[str]
+    hour_start: str
+    hour_end: str
+    inclusive: bool | None = None
+
+
+@dataclass
 class CallbackWindow:
     days: CallbackDays
     hour_start: str
     hour_end: str
     inclusive: bool | None = None
     must_be_after_now: bool | None = None
+    per_weekday: list[PerWeekdayWindow] = field(default_factory=list)
 
 
 @dataclass
@@ -225,6 +235,7 @@ class Deadline:
     kind: str
     n: int
     roll: str = "none"
+    base: str | None = None
 
 
 @dataclass
@@ -251,10 +262,19 @@ class BelowFloor:
 
 
 @dataclass
+class FloorPercentRule:
+    percent: float
+    of_field: str
+
+
+@dataclass
 class Amounts:
     full_amount_field: str
     floor_fields: dict[str, str] = field(default_factory=dict)
     floor_default_field: str | None = None
+    floor_percent: dict[str, FloorPercentRule] = field(default_factory=dict)
+    floor_default_percent: FloorPercentRule | None = None
+    rounding_mode: str | None = None
     ask_full_first: bool | None = None
     never_ask_customer_amount: bool | None = None
     forbidden_questions: list[str] = field(default_factory=list)
@@ -295,6 +315,7 @@ class PromiseRules:
     retries_on_failure: int | None = None
     say_recorded_only_after_ok: bool | None = None
     success_sentence: str | None = None
+    success_sentence_plural: str | None = None
     on_failure: PromiseFailure | None = None
     forbidden_offers: list[str] = field(default_factory=list)
 
@@ -306,6 +327,7 @@ class Attempt:
     amount_rule: str
     bands: list[str] | None = None
     note: str | None = None
+    date_n: int | None = None
 
 
 @dataclass
@@ -444,6 +466,7 @@ class VerbatimRule:
     stage: str
     text: str
     source_ref: str
+    gap_kind: str | None = None
 
 
 @dataclass
@@ -683,6 +706,20 @@ def semantic_errors(data: dict[str, Any]) -> list[str]:
                     errors.append(f"bands[{i}]: overlaps bands[{j}]")
     band_names = {b.get("name") for b in bands}
 
+    account = _as_dict(data.get("account_fields"))
+    for i, band in enumerate(bands):
+        dl = _as_dict(band.get("deadline"))
+        kind, base = dl.get("kind"), dl.get("base")
+        based = kind in ("business_days_after_base", "calendar_days_after_base")
+        if based and base is None:
+            errors.append(f"bands[{i}].deadline.base: required for kind '{kind}'")
+        elif not based and base is not None:
+            errors.append(f"bands[{i}].deadline.base: only allowed with a *_after_base kind")
+        if base == "due_date_field" and not account.get("due_date"):
+            errors.append(f"bands[{i}].deadline.base: due_date_field needs account_fields.due_date")
+        if base == "days_late_field" and not account.get("days_late"):
+            errors.append(f"bands[{i}].deadline.base: days_late_field needs account_fields.days_late")
+
     seen_index: dict[int, int] = {}
     attempts = _as_list(_as_dict(data.get("persuasion")).get("attempts"))
     for i, attempt in enumerate(attempts):
@@ -690,6 +727,11 @@ def semantic_errors(data: dict[str, Any]) -> list[str]:
         for k, name in enumerate(_as_list(att.get("bands"))):
             if name not in band_names:
                 errors.append(f"persuasion.attempts[{i}].bands[{k}]: unknown band '{name}'")
+        rule, date_n = att.get("date_rule"), att.get("date_n")
+        if rule == "business_days_after_today" and date_n is None:
+            errors.append(f"persuasion.attempts[{i}].date_n: required with date_rule business_days_after_today")
+        elif rule != "business_days_after_today" and date_n is not None:
+            errors.append(f"persuasion.attempts[{i}].date_n: only allowed with date_rule business_days_after_today")
         idx = att.get("index")
         if isinstance(idx, int):
             if idx in seen_index:
@@ -704,6 +746,18 @@ def semantic_errors(data: dict[str, Any]) -> list[str]:
     start, end = _hhmm_minutes(window.get("hour_start")), _hhmm_minutes(window.get("hour_end"))
     if start is not None and end is not None and end < start:
         errors.append("third_party.callback_window.hour_end: before hour_start")
+    listed: dict[str, int] = {}
+    for i, entry in enumerate(_as_list(window.get("per_weekday"))):
+        e = _as_dict(entry)
+        here = f"third_party.callback_window.per_weekday[{i}]"
+        for day in _as_list(e.get("weekdays")):
+            if day in listed:
+                errors.append(f"{here}.weekdays: weekday '{day}' listed twice (also per_weekday[{listed[day]}])")
+            else:
+                listed[day] = i
+        s, t = _hhmm_minutes(e.get("hour_start")), _hhmm_minutes(e.get("hour_end"))
+        if s is not None and t is not None and t < s:
+            errors.append(f"{here}.hour_end: before hour_start")
 
     rows = [_as_dict(r) for r in _as_list(_as_dict(data.get("closing")).get("outcome_table"))]
     outcomes = {r.get("outcome") for r in rows}

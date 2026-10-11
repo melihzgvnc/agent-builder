@@ -88,7 +88,7 @@ def test_notes_scenarios_only_with_the_note_tool() -> None:
 def test_broken_callback_hour_is_caught() -> None:
     wf, spec_d, report = build("A")
     tool = tool_of(wf, compiler.ROLE_CALLBACK)
-    tool["pre_process_code"] = mutate(tool["pre_process_code"], "mins < HS", "mins < HS - 120")
+    tool["pre_process_code"] = mutate(tool["pre_process_code"], "mins < hs", "mins < hs - 120")
     result = run(wf, spec_d, report)
     assert result.failed_features() == {"callback"}
     assert any("before_start" in c.name for c in result.failed)
@@ -98,7 +98,7 @@ def test_broken_callback_inclusive_edge_is_caught() -> None:
     wf, spec_d, report = build("A")
     assert spec_d["third_party"]["callback_window"]["inclusive"] is True
     tool = tool_of(wf, compiler.ROLE_CALLBACK)
-    tool["pre_process_code"] = mutate(tool["pre_process_code"], "late = mins > HE or", "late = mins >= HE or")
+    tool["pre_process_code"] = mutate(tool["pre_process_code"], "late = mins > he or", "late = mins >= he or")
     result = run(wf, spec_d, report)
     assert any("end_edge" in c.name for c in result.failed)
     assert result.failed_features() == {"callback"}
@@ -116,7 +116,7 @@ def test_broken_amount_floor_is_caught() -> None:
 def test_broken_promise_date_is_caught() -> None:
     wf, spec_d, report = build("A")
     tool = tool_of(wf, compiler.ROLE_PROMISE)
-    tool["pre_process_code"] = mutate(tool["pre_process_code"], "if c >= asked_date:", "if c > asked_date:")
+    tool["pre_process_code"] = mutate(tool["pre_process_code"], "asked_date not in bds", "asked_date in bds")
     result = run(wf, spec_d, report)
     assert "promise" in result.failed_features()
     assert any("promise.date[" in c.name for c in result.failed)
@@ -148,7 +148,7 @@ def test_broken_note_hook_is_caught() -> None:
 def test_none_written_by_a_hook_is_caught() -> None:
     wf, spec_d, report = build("A")
     tool = tool_of(wf, compiler.ROLE_PROMISE)
-    tool["pre_process_code"] = mutate(tool["pre_process_code"], "vars['promise_changed'] = 'yes'", "vars['promise_changed'] = None")
+    tool["pre_process_code"] = mutate(tool["pre_process_code"], "vars['promise_changed'] = 'no'", "vars['promise_changed'] = None")
     result = run(wf, spec_d, report)
     assert "no_none" in result.failed_features()
 
@@ -200,7 +200,7 @@ def test_callback_checks_are_skipped_without_a_callback_window() -> None:
 def test_repair_spec_drops_the_callback_window_and_recompiles_clean() -> None:
     wf, spec_d, report = build("A")
     tool = tool_of(wf, compiler.ROLE_CALLBACK)
-    tool["pre_process_code"] = mutate(tool["pre_process_code"], "mins < HS", "mins < HS - 120")
+    tool["pre_process_code"] = mutate(tool["pre_process_code"], "mins < hs", "mins < hs - 120")
     result = run(wf, spec_d, report)
     repaired = selfcheck.repair_spec(spec_d, result)
     assert repaired is not None
@@ -242,7 +242,7 @@ def test_repairs_table_is_exactly_the_two_entries() -> None:
 
 def test_report_context_is_not_in_to_dict() -> None:
     _wf, _sd, report = build("AB")
-    assert set(report.to_dict()) == {"warnings", "gaps", "to_verify", "written_vars", "lint"}
+    assert set(report.to_dict()) == {"warnings", "gaps", "to_verify", "written_vars", "lint", "degraded"}
     assert set(report.context) == {"fields", "facts_io", "has", "n_products", "close_name", "resp"}
 
 
@@ -258,3 +258,20 @@ def test_variant_spec_is_exercised_read_only_when_valid() -> None:
     result = run(wf, sd, report)
     assert result.ran > 0
     assert not [c for c in result.failed if c.feature == "structure"]
+
+
+def test_opening_order_and_closing_checks() -> None:
+    wf, spec_d, report = build("A")
+    result = run(wf, spec_d, report)
+    assert {"opening.order", "closing.auto_close", "closing.end_nodes_speak", "closing.wrapup_cap"} <= set(c.name for c in result.checks)
+    assert not [c for c in result.checks if not c.ok]
+    # reordered first message, missing auto_close transition, silent end node
+    wf2, spec_d, report = build("A")
+    tts = wf2["nodes"]["identity"]["on_enter"]
+    tts["text"] = " ".join(reversed(tts["text"].split(". ")))
+    wf2["nodes"]["negotiate"]["transitions"] = [
+        t for t in wf2["nodes"]["negotiate"]["transitions"] if "auto_close" not in json.dumps(t.get("condition"))
+    ]
+    wf2["nodes"]["end_final"]["terminal"]["function"]["parameters"]["properties"].pop("spoken_message")
+    failed = {c.name for c in run(wf2, spec_d, report).checks if not c.ok}
+    assert {"opening.order", "closing.auto_close", "closing.end_nodes_speak"} <= failed

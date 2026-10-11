@@ -162,6 +162,15 @@ def _saved(ctx: BuildContext) -> dict[str, Any]:
     return info
 
 
+def _degrade_compile(ctx: BuildContext, report: Any) -> None:
+    """One DEGRADED trace line per compile finding the build knows it does not enforce (once each)."""
+    seen = ctx.results.get("degraded")
+    for text in report.degraded:
+        message = f"compile: {text}"
+        if not (isinstance(seen, list) and message in seen):
+            _degrade(ctx, message)
+
+
 def _degrade(ctx: BuildContext, message: str) -> None:
     """Record a loud DEGRADED warning in the trace and in ctx.results['degraded']."""
     ctx.trace.warn(f"DEGRADED: {message}")
@@ -265,6 +274,7 @@ def stage_compile_workflow(ctx: BuildContext) -> str:
         ctx.trace.warn(f"compile: {w}")
     for g in report.gaps:
         ctx.trace.warn(f"compile gap: {g}")
+    _degrade_compile(ctx, report)
     nodes = workflow.get("nodes")
     count = len(nodes) if isinstance(nodes, (dict, list)) else 0
     return f"{count} nodes, {len(report.warnings)} warning(s), {len(report.gaps)} gap(s)"
@@ -332,6 +342,7 @@ def _try_repair(
         {**report.to_dict(), "fallback_workflow": False, "fallback_reason": ""},
     )
     again.repairs = list(names)
+    _degrade_compile(ctx, report)
     ctx.trace.warn(
         f"REPAIRED: [{label}] changed the workflow (failed checks {len(result.failed)} -> {len(again.failed)}); "
         "spec.json is unchanged, see compile_report.json"
@@ -486,6 +497,11 @@ def stage_online_test(ctx: BuildContext) -> str:
     bank = ctx.bank if ctx.bank is not None else online_runner.HttpBank(scoring)
     spec = spec_to_dict(ctx.spec_obj) if ctx.spec_obj is not None else ctx.spec
     cases, skipped = online_cases.generate_cases(spec, carriers)
+    coverage = online_cases.coverage_report(spec, cases, skipped)
+    for row in coverage:
+        if row["applicable"] and not row["generated"]:
+            ctx.trace.warn(f"online_test coverage: no case for {row['kind']}: {row['reason']}")
+            _degrade(ctx, f"online_test: no case covers {row['kind']}: {row['reason']}")
     if not cases:
         _degrade(ctx, "online_test skipped: the spec yields no test case (" + "; ".join(skipped)[:300] + ")")
         raise StageSkipped("no test cases")
@@ -531,7 +547,7 @@ def stage_online_test(ctx: BuildContext) -> str:
         "slot": ctx.slot, "carriers_file": str(path), "agent_id": agent_id,
         "cases": [{"id": c.id, "kind": c.kind, "carrier": c.carrier_id, "title": c.title, "script": c.script,
                    "expected": c.expected} for c in cases],
-        "skipped_kinds": skipped,
+        "skipped_kinds": skipped, "coverage": coverage,
         "rounds": out.rounds, "repairs_tried": out.repairs, "decision": out.decision,
         "classes": {i: {"class": c.klass, "evidence": c.evidence} for i, c in out.classes.items()},
         "degraded": out.degraded, "passed": passed, "scored": len(scored),

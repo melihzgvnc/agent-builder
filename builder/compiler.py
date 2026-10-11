@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
-from builder import engine, hooks, lint, node_prompts, snippets, tools_gen
+from builder import engine, gap_guard, hooks, lint, node_prompts, snippets, tools_gen
 from builder.node_prompts import PromptCtx
 from builder.spec import Action, OutcomeRef, PolicySpec, spec_to_dict
 from builder.tools_gen import placeholder
@@ -42,15 +42,22 @@ NODE_FINALIZE: str = "finalize"
 NODE_FINALIZE_FORCED: str = "finalize_forced"
 NODE_FINALIZE_EARLY: str = "finalize_early"
 NODE_END_FINAL: str = "end_final"
+NODE_END_SINGLE: str = "end_final_single"
+NODE_END_PLURAL: str = "end_final_plural"
+NODE_WRAPUP: str = "wrapup"
 NODE_BACKEND_EXIT: str = "exit_backend_failure"
 NODE_BACKEND_END: str = "end_backend_failure"
 RESERVED_NODES: frozenset[str] = frozenset(
     (NODE_IDENTITY, NODE_ACCOUNT, NODE_FACTS, NODE_NEGOTIATE, NODE_FINALIZE, NODE_FINALIZE_FORCED,
-     NODE_FINALIZE_EARLY, NODE_END_FINAL, NODE_BACKEND_EXIT, NODE_BACKEND_END)
+     NODE_FINALIZE_EARLY, NODE_END_FINAL, NODE_END_SINGLE, NODE_END_PLURAL, NODE_WRAPUP,
+     NODE_BACKEND_EXIT, NODE_BACKEND_END)
 )
 
 IDENTITY_TURNS: int = 40
 NEGOTIATE_TURNS: int = 80
+WRAPUP_TURNS: int = 2
+# The one builder-owned spoken text: a farewell for an English spec whose goodbye is required but unworded.
+DEFAULT_FAREWELL_EN: str = "Thank you, and goodbye."
 ACCOUNT_RETRIES: int = 2
 PRODUCTS_VAR: str = "account_products"
 VAR_ALL_VERIFIED: str = "identity_all_verified"
@@ -108,7 +115,7 @@ TOOL_DESC: dict[str, str] = {
 TO_VERIFY: list[str] = [
     "1. Same-turn transition after a tool result when the variable was written by a post-hook (identity_state, promise_state), not only by response_mapping. The identity transition also tests the flattened and mapped keys.",
     "2. Post-hook what_to_do_next makes the model speak, including the actual recorded values and the success sentence. Texts live in hooks.DEFAULT_TEXTS.",
-    "3. Pre-hook overwrite of body fields on model-called tools (forced product id, clamped date and amount, blanked callback fields).",
+    "3. Pre-hook of the promise tool only blanks: a provably bad date becomes '', a bad amount 0, and the product id is blanked too. The bank must reject a blank date, a zero amount and a blank product id; values the customer confirmed are never rewritten. The callback pre-hook blanks date and time. The forced product id is the only rewrite.",
     "4. is_tool_call transitions: the tool is transition_to_<exit code node>; the model speaks and moves in one message; the gated exit, the gated finalize and finalize_early really route back to their source node.",
     "5. end_call node with spoken_message on state-driven exits, and terminal function names as ended reasons.",
     "6. The close pre-hook sees p<k>_*, transfer_reason and other vars written by hooks of model-called tools (confirmed only for code nodes and engine-run tools).",
@@ -116,6 +123,9 @@ TO_VERIFY: list[str] = [
     "8. Hooks without imports: if the sandbox forbids string slicing or float(), the hook falls back to unchanged requests (all wrapped).",
     "9. Product list flattened keys appear for the account node with the node name as prefix (get_account_response.data.<list>.<i>.<field>); otherwise products_state is unknown and the call ends on the backend-failure exit.",
     "10. The non-dry smoke test sends a placeholder customer id and ends the chat, and the lifecycle close tool may run on chat end, so it can post a close record with that id and the unverified fallback outcome to the backend. Easy change: build the smoke variables from a real customer id taken from the spec or cases, or accept the extra record.",
+    "11. The variable transition on auto_close (and on closing_ready for the wrapup node) fires in the same turn as the promise / note result, before the model speaks again. Negotiate then has two transitions to finalize (the variable group and the tool call); the platform must accept that.",
+    "12. end_call with message_mode custom plays spoken_message (confirmation sentence + farewell) and then hangs up; it is also used by every exit end node.",
+    "13. The wrapup node ends the call after max_node_turns (2) through max_turn_transition; a transfer made before verification (finalize_early) does not go through wrapup.",
 ]
 
 
@@ -132,6 +142,8 @@ class CompileReport:
     to_verify: list[str] = field(default_factory=list)
     written_vars: list[str] = field(default_factory=list)
     lint: list[str] = field(default_factory=list)
+    # Rules the build knows it does not enforce (gap guard, missing safe default); loud in the trace.
+    degraded: list[str] = field(default_factory=list)
     # Compiler decisions the self-checks need (not part of to_dict()).
     context: dict[str, Any] = field(default_factory=dict)
 
@@ -142,6 +154,7 @@ class CompileReport:
             "to_verify": list(self.to_verify),
             "written_vars": list(self.written_vars),
             "lint": list(self.lint),
+            "degraded": list(self.degraded),
         }
 
 
@@ -325,7 +338,9 @@ class _Build:
         self.products_key = ""
         self.io: dict = {}
         self._final: dict | None = None
+        self._agg_derived: dict = {}
         self.note_map: dict[tuple[str, str], str] = {}
+        self._farewell: str | None = None
 
     # ---- helpers ----------------------------------------------------------------------------
 
@@ -630,18 +645,79 @@ class _Build:
         desc = "End the call with outcome " + outcome + (" and reason " + reason if reason else "")
         if when:
             desc += ". Use it when: " + when
-        ex = _Exit(outcome, reason, variant, code, end, spoken, desc)
+        ex = _Exit(outcome, reason, variant, code, end, spoken if spoken is not None else (self.farewell() or None), desc)
         self.exits[key] = ex
         return ex
 
-    def goodbye(self) -> str:
+    def farewell(self) -> str:
+        """The goodbye the end nodes speak: the spec's text, else (goodbye required, English spec) the
+        documented default with a warning, else '' with a gap (the end nodes stay silent)."""
+        if self._farewell is not None:
+            return self._farewell
         g = self.spec.closing.goodbye_before_close
-        return g.text if g is not None and g.text else ""
+        text = ""
+        gtext = g.text if g is not None and g.text else ""
+        if gtext and (re.search(r"\b[a-z]+_[a-z_]+\b", gtext) or re.search(r"\bthe (customer|caller|agent)\b", gtext, re.I)):
+            # an instruction to the model, not words to say: never speak it
+            self.warn("closing.goodbye_before_close.text reads as an instruction, not as spoken words: ignored")
+            gtext = ""
+        if gtext:
+            text = gtext
+        elif g is not None and g.required is not False:
+            if self.spec.meta.language.lower().startswith("en"):
+                text = DEFAULT_FAREWELL_EN
+                self.warn("closing.goodbye_before_close has no text: the end nodes speak the builder default farewell")
+            else:
+                self.gap(
+                    "closing.goodbye_before_close has no text and the language is "
+                    + self.spec.meta.language + ": the end nodes are silent"
+                )
+        self._farewell = text
+        return text
+
+    def goodbye(self) -> str:
+        return self.farewell()
+
+    def confirm_single(self) -> str:
+        pr = self.spec.promise_rules
+        return pr.success_sentence if pr is not None and pr.success_sentence else ""
+
+    def confirm_plural(self) -> str:
+        pr = self.spec.promise_rules
+        text = pr.success_sentence_plural if pr is not None and pr.success_sentence_plural else ""
+        return text or self.confirm_single()
+
+    @property
+    def auto_close(self) -> bool:
+        return bool(self.confirm_single() or self.farewell())
+
+    @property
+    def farewell_auto(self) -> bool:
+        return bool(self.farewell())
+
+    def variant_groups(self) -> list[dict]:
+        """Finalize transitions to the end nodes that speak the confirmation sentence."""
+        out: list[dict] = []
+        if self.confirm_plural():
+            out.append(_group("Several promises are recorded", NODE_END_PLURAL, [_eq("closing_variant", "plural")]))
+        if self.confirm_single():
+            out.append(_group("One promise is recorded", NODE_END_SINGLE, [_eq("closing_variant", "single")]))
+        return out
+
+    def check_template_items(self) -> None:
+        op = self.spec.opening
+        fs = op.first_sentence if op is not None else None
+        if fs is None or not fs.template:
+            return
+        low = fs.template.lower()
+        for item in fs.must_include:
+            if item.lower() not in low:
+                self.warn(f"opening.first_sentence.template does not contain the required item {item!r}")
 
     def spoken(self, say: str | None) -> str | None:
         parts = [node_prompts.fill_call_slots(say, self.spec)] if say else []
-        if self.goodbye():
-            parts.append(self.goodbye())
+        if self.farewell():
+            parts.append(self.farewell())
         return " ".join(parts) if parts else None
 
     # ---- (d) tools and hooks ------------------------------------------------------------------
@@ -671,6 +747,7 @@ class _Build:
             "multi": bool(mp.enabled),
             "decimals": self.spec.amounts.rounding_decimals,
             "goodbye": self.goodbye() or None,
+            "farewell_auto": self.farewell_auto,
         }
 
     def verify_tool(self) -> dict:
@@ -717,8 +794,14 @@ class _Build:
             "weekend": sorted(engine.make_calendar(self.sd)["weekend"]),
             "holidays": sorted(d.isoformat() for d in engine.make_calendar(self.sd)["holidays"]),
             "days_n": cw.days.n,
+            "windows": [
+                [engine.WEEKDAYS.index(str(day).lower()), pw.hour_start, pw.hour_end, pw.inclusive]
+                for pw in cw.per_weekday for day in pw.weekdays
+            ],
+            "weekday_names": list(engine.WEEKDAYS),
             "ok_key": self.ok_key(ROLE_CALLBACK),
             "reasks": tp.reasks_when_outside,
+            "farewell_auto": self.farewell_auto,
             "exit_scheduled": exit_ok, "exit_no_time": exit_none,
         }
         tool = self.tool(ROLE_CALLBACK)
@@ -735,6 +818,7 @@ class _Build:
             "retries": pr.retries_on_failure if pr is not None else None,
             "note_reason": (mp.on_promise_failure.note_reason if mp.on_promise_failure is not None else None),
             "success_sentence": pr.success_sentence if pr is not None else None,
+            "auto_close": self.auto_close,
             "finalize_transition": finalize_transition,
         })
         if mp.enabled and cfg["note_reason"] and not self.uses_notes:
@@ -753,6 +837,7 @@ class _Build:
             "allowed_reasons": self._enum(ROLE_NOTE, f["reason"]),
             "fallback_reason": mp.on_promise_failure.note_reason if mp.on_promise_failure is not None else None,
             "reasons": list(mp.notes.reasons) if mp.notes is not None else [],
+            "auto_close": self.auto_close,
             "finalize_transition": finalize_transition,
         })
         tool = self.tool(ROLE_NOTE)
@@ -767,6 +852,7 @@ class _Build:
             "queue_reasons": [[q, r] for q, r in self.queue_map.items()],
             "no_notes": bool(mp.on_transfer is not None and mp.on_transfer.add_no_notes),
             "goodbye": self.goodbye() or None,
+            "farewell_auto": self.farewell_auto,
             "finalize_transition": finalize_transition,
         }
         tool = self.tool(ROLE_TRANSFER)
@@ -776,15 +862,25 @@ class _Build:
         if self._final is None:
             rows = self.spec.closing.outcome_table
             with_reason = {r.outcome for r in rows if r.reason}
-            agg = self.sd.get("closing", {}).get("aggregation")
+            fallback_post = self.fallback_post()
+            self.derive_precedence()
             self._final = {
-                "aggregation": agg if isinstance(agg, dict) else {},
+                "aggregation": self.aggregation_cfg(),
                 "n_products": self.n_products,
                 "fallback_pre": self.fallback_pre(),
-                "fallback_post": self.fallback_post(),
+                "fallback_post": fallback_post,
                 "reasonless": sorted({r.outcome for r in rows} - with_reason),
+                "confirm_single": bool(self.confirm_single()),
+                "confirm_plural": bool(self.confirm_plural()),
             }
         return dict(self._final)
+
+    def aggregation_cfg(self) -> dict:
+        """The spec's closing.aggregation plus the derived default / precedence, so hooks and finalize agree."""
+        agg = self.sd.get("closing", {}).get("aggregation")
+        if not isinstance(agg, dict):
+            return {}
+        return {**agg, **self._agg_derived}
 
     @staticmethod
     def _pair(ref: OutcomeRef | None) -> dict | None:
@@ -803,22 +899,76 @@ class _Build:
         return None
 
     def fallback_post(self) -> dict | None:
-        spec = self.spec
-        agg = spec.closing.aggregation
+        """Outcome for a verified call that ends with nothing recorded.
+
+        Order: closing.aggregation.default -> a default derived from the spec -> a gap (degraded).
+        """
+        agg = self.spec.closing.aggregation
         if agg is not None and agg.default is not None:
             return self._pair(agg.default)
-        for ref in (
-            spec.persuasion.on_exhausted if spec.persuasion else None,
-            spec.promise_rules.on_failure.outcome if spec.promise_rules and spec.promise_rules.on_failure else None,
-        ):
-            if ref is not None:
-                self.warn(
-                    "closing.aggregation.default is missing: a verified call that ends with nothing recorded "
-                    f"falls back to {ref.outcome}/{ref.reason or ''}"
-                )
-                return self._pair(ref)
-        self.gap("no outcome for a verified call that ends with nothing recorded")
+        ref, how = self._derive_aggregation_default()
+        if ref is not None:
+            pair = self._pair(ref)
+            if agg is not None:
+                self._agg_derived["default"] = {"outcome": ref.outcome, **({"reason": ref.reason} if ref.reason else {})}
+            self.warn(
+                f"closing.aggregation.default derived: a verified call that ends with nothing recorded "
+                f"falls back to {ref.outcome}/{ref.reason or ''} ({how})"
+            )
+            return pair
+        text = (
+            "closing.aggregation.default: no safe default derivable"
+            if agg is not None
+            else "no outcome for a verified call that ends with nothing recorded"
+        )
+        self.gap(text)
+        self.report.degraded.append(text)
         return None
+
+    def _derive_aggregation_default(self) -> tuple[OutcomeRef | None, str]:
+        """Default outcome from the spec's own rules, with a short description of the source."""
+        spec = self.spec
+        exhausted = spec.persuasion.on_exhausted if spec.persuasion else None
+        if exhausted is not None:
+            return exhausted, "persuasion.on_exhausted"
+        failed = spec.promise_rules.on_failure if spec.promise_rules else None
+        if failed is not None and failed.outcome is not None:
+            return failed.outcome, "promise_rules.on_failure.outcome"
+        agg, notes = spec.closing.aggregation, spec.multi_product.notes
+        first = agg.first_note_not_equal if agg is not None else None
+        if agg is None or first is None or notes is None:
+            return None, ""
+        aggregated = {agg.transfer_outcome, agg.promise_outcome}
+        if agg.all_notes_equal is not None:
+            aggregated.add(agg.all_notes_equal.outcome)
+        rows = [
+            r for r in spec.closing.outcome_table
+            if r.outcome == first.outcome and r.outcome not in aggregated and r.reason
+            and r.reason != first.excluded_reason and r.reason in notes.reasons
+        ]
+        if len(rows) == 1:
+            return OutcomeRef(rows[0].outcome, rows[0].reason), "the one outcome_table row of first_note_not_equal"
+        return None, ""
+
+    def derive_precedence(self) -> None:
+        """An aggregation without precedence steps gets the fixed order transfer, any_promise, note steps."""
+        agg = self.spec.closing.aggregation
+        if agg is None or agg.precedence:
+            return
+        steps = ["transfer", "any_promise"]
+        if agg.all_notes_equal is not None:
+            steps.append("all_notes_equal")
+        if agg.first_note_not_equal is not None:
+            steps.append("first_note_not_equal")
+        self._agg_derived["precedence"] = steps
+        self.warn("closing.aggregation.precedence derived: " + ", ".join(steps))
+
+    def apply_gap_guard(self) -> None:
+        """Rules that exist only as prose although a structured field exists: gap + degraded."""
+        for g in gap_guard.find_unstructured(self.sd):
+            text = f"unstructured rule ({g.kind}): {g.evidence}"
+            self.gap(text)
+            self.report.degraded.append(text)
 
     def close_tool(self) -> dict:
         f = self.fields[ROLE_CLOSE]
@@ -844,7 +994,20 @@ class _Build:
             uses_notes=self.uses_notes,
             n_products=self.n_products,
             note_reasons=list(self.spec.multi_product.notes.reasons) if self.spec.multi_product.notes else [],
+            farewell_auto=self.farewell_auto,
+            auto_close=self.auto_close,
+            auto_drop_texts=self._auto_drop_texts(),
         )
+
+    def _auto_drop_texts(self) -> tuple[str, ...]:
+        """Mandated texts the end nodes speak by themselves (the model must not say them too)."""
+        pr, g = self.spec.promise_rules, self.spec.closing.goodbye_before_close
+        texts: list[str] = []
+        if self.auto_close and pr is not None:
+            texts += [t for t in (pr.success_sentence, pr.success_sentence_plural) if t]
+        if self.farewell_auto and g is not None and g.text:
+            texts.append(g.text)
+        return tuple(texts)
 
     def identity_exits(self) -> list[_Exit]:
         spec = self.spec
@@ -941,9 +1104,14 @@ class _Build:
         id_ctx.callback_exit = cb_exit.transition if cb_exit else ""
         id_ctx.no_time_exit = no_time.transition if no_time else ""
         neg_ctx = self.ctx({r: t["function"]["name"] for r, t in neg_tools_by_role.items()}, neg_exits, _tt(NODE_FINALIZE), self.note_map)
-        opening = node_prompts.opening_text(spec)
-        if not opening:
+        mode = node_prompts.opening_mode(spec)
+        opening = node_prompts.opening_text(spec) if mode in ("fixed", "question_only") else ""
+        if mode == "none":
             self.gap("opening has no first sentence or confirmation question: the identity node opens with the model")
+        elif mode == "composed":
+            self.warn("opening.first_sentence has no template: the model composes it")
+        self.check_template_items()
+        wrap_ctx = self.ctx({}, [], _tt(NODE_FINALIZE), {})
         # facts
         self.io = self.facts_io()
         facts_src = snippets.facts_snippet(self.sd, self.io)
@@ -990,8 +1158,11 @@ class _Build:
         neg_trans: list[dict] = [
             _group("The security check failed", failed_exit.code if failed_exit else NODE_FINALIZE_FORCED, [_eq("identity_state", "failed")]),
             _group("A promise could not be recorded", write_exit.code if write_exit else NODE_FINALIZE_FORCED, [_eq("promise_state", "write_failed")]),
-            _tool_transition(NODE_FINALIZE, "Everything is handled or the call was transferred; the call can end"),
         ]
+        if self.auto_close:
+            neg_trans.append(_group("Everything is handled; the call ends by itself", NODE_FINALIZE, [_eq("auto_close", "yes")]))
+        neg_trans.append(_group("Everything is handled; wrap up", NODE_WRAPUP, [_eq("closing_ready", "yes")]))
+        neg_trans.append(_tool_transition(NODE_FINALIZE, "Everything is handled or the call was transferred; the call can end"))
         for ex in neg_exits:
             neg_trans.append(_tool_transition(ex.code, ex.desc))
         nodes[NODE_NEGOTIATE] = _conv_node(
@@ -1007,17 +1178,30 @@ class _Build:
         fcfg = self.final_cfg()
         nodes[NODE_FINALIZE] = _code_node(
             NODE_FINALIZE, hooks.finalize_source(fcfg, force=False), NODE_END_FINAL,
-            [_group("The call is ready to end", NODE_END_FINAL, [_eq("closing_ready", "yes")]), _always(NODE_NEGOTIATE, "not ready: back to the conversation")],
+            self.variant_groups() + [_group("The call is ready to end", NODE_END_FINAL, [_eq("closing_ready", "yes")]), _always(NODE_NEGOTIATE, "not ready: back to the conversation")],
         )
         nodes[NODE_FINALIZE_FORCED] = _code_node(
-            NODE_FINALIZE_FORCED, hooks.finalize_source(fcfg, force=True), NODE_END_FINAL, [_always(NODE_END_FINAL)]
+            NODE_FINALIZE_FORCED, hooks.finalize_source(fcfg, force=True), NODE_END_FINAL, self.variant_groups() + [_always(NODE_END_FINAL)]
         )
         if early:
             nodes[NODE_FINALIZE_EARLY] = _code_node(
                 NODE_FINALIZE_EARLY, hooks.finalize_source(fcfg, force=False), NODE_END_FINAL,
-                [_group("The call is ready to end", NODE_END_FINAL, [_eq("closing_ready", "yes")]), _always(NODE_IDENTITY, "not ready: back to the conversation")],
+                self.variant_groups() + [_group("The call is ready to end", NODE_END_FINAL, [_eq("closing_ready", "yes")]), _always(NODE_IDENTITY, "not ready: back to the conversation")],
             )
-        nodes[NODE_END_FINAL] = tools_gen.end_call_node(NODE_END_FINAL)
+        nodes[NODE_WRAPUP] = _conv_node(
+            NODE_WRAPUP,
+            node_prompts.wrapup_task(spec, wrap_ctx),
+            {"type": "llm"},
+            [],
+            [_tool_transition(NODE_FINALIZE, "The closing words are said; the call can end")],
+            WRAPUP_TURNS,
+            NODE_FINALIZE,
+        )
+        nodes[NODE_END_FINAL] = tools_gen.end_call_node(NODE_END_FINAL, self.farewell() or None)
+        if self.confirm_single():
+            nodes[NODE_END_SINGLE] = tools_gen.end_call_node(NODE_END_SINGLE, self.spoken(self.confirm_single()))
+        if self.confirm_plural():
+            nodes[NODE_END_PLURAL] = tools_gen.end_call_node(NODE_END_PLURAL, self.spoken(self.confirm_plural()))
 
         # exit / end pairs
         for ex in list(self.exits.values()):
@@ -1035,6 +1219,7 @@ class _Build:
             "global_nodes": {},
             "tools": [self.close_tool()],
         }
+        self.apply_gap_guard()
         self.finish(wf)
         return wf
 
@@ -1088,12 +1273,14 @@ class _Build:
             "identity_state", "identity_wrong", "identity_verified_count", VAR_ALL_VERIFIED,
             "callback_state", "callback_invalid_count", "callback_guard", "callback_sent_date", "callback_sent_time",
             "promise_idx", "promise_guard", "promise_asked_date", "promise_asked_amount", "promise_sent_date",
-            "promise_sent_amount", "promise_changed", "promise_state", "note_idx", "note_guard", "note_sent_reason",
+            "promise_sent_amount", "promise_changed", "promise_reject", "promise_limit_date", "promise_limit_amount",
+            "promise_unchecked", "callback_hours", "promise_state", "note_idx", "note_guard", "note_sent_reason",
             "note_blocked_hit", "notes_blocked", "transfer_sent_queue", "transfer_state", "transfer_reason",
             "closing_ready", "final_outcome", "final_reason",
+            "auto_close", "closing_variant",
         ]
         for k in range(1, self.n_products + 1):
-            for suffix in ("promise", "promise_fails", "promise_date", "promise_amount", "note", "note_fails"):
+            for suffix in ("promise", "promise_fails", "promise_date", "promise_amount", "promise_rejects", "note", "note_fails"):
                 names.append(f"p{k}_{suffix}")
         names += engine.output_names(self.sd, io)
         return list(dict.fromkeys(names))

@@ -36,6 +36,7 @@ DAY_CAP: int = 3660
 ATTEMPT_CAP: int = 20
 LISTED_BUSINESS_DAYS: int = 10
 LISTED_HOLIDAYS: int = 20
+LISTED_PROMISE_DATES: int = 15
 
 _DATE_RE = re.compile(r"\s*(\d\d\d\d)-(\d\d)-(\d\d)")
 _NOW_RE = re.compile(r"\s*(\d\d\d\d)-(\d\d)-(\d\d)[T ](\d\d):(\d\d)(?::(\d\d))?")
@@ -279,7 +280,49 @@ def band_for(days_late: object, spec: dict) -> dict | None:
     return None
 
 
-def deadline_for(band: dict, today: datetime.date, cal: dict) -> datetime.date | None:
+def _roll_date(d: datetime.date, roll: object, cal: dict) -> datetime.date:
+    if roll == "previous_business_day":
+        return previous_business_day_on_or_before(d, cal)
+    if roll == "next_business_day":
+        return next_business_day_on_or_after(d, cal)
+    return d
+
+
+def base_date_for(
+    deadline_cfg: dict, product: dict | None, today: datetime.date, spec: dict
+) -> datetime.date | None:
+    """Date a *_after_base deadline counts from, for one product.
+
+    base 'due_date_field': the date in the account field account_fields.due_date.
+    base 'days_late_field': today minus the days late in account_fields.days_late.
+    None when the base is not named, the account field is not mapped, or the product value is
+    missing or unreadable: there is no fallback date.
+    """
+    if not isinstance(product, dict):
+        return None
+    af = spec.get("account_fields") or {}
+    base = (deadline_cfg or {}).get("base")
+    if base == "due_date_field":
+        field = af.get("due_date")
+        return parse_date(product.get(field)) if field else None
+    if base == "days_late_field":
+        field = af.get("days_late")
+        late = to_number(product.get(field)) if field else None
+        if late is None:
+            return None
+        return today - datetime.timedelta(days=int(late))
+    return None
+
+
+def deadline_for(
+    band: dict,
+    today: datetime.date,
+    cal: dict,
+    product: dict | None = None,
+    spec: dict | None = None,
+) -> datetime.date | None:
+    """Promise deadline of a band. The *_after_base kinds need the product and the spec (the
+    base is per account); without them, or with an unresolved base, the result is None."""
     dl = band.get("deadline") or {}
     n = int(to_number(dl.get("n")) or 0)
     kind = dl.get("kind")
@@ -293,6 +336,15 @@ def deadline_for(band: dict, today: datetime.date, cal: dict) -> datetime.date |
         if roll == "next_business_day":
             return next_business_day_on_or_after(d, cal)
         return d
+    if kind == "business_days_after_base" or kind == "calendar_days_after_base":
+        if product is None or spec is None:
+            return None
+        base = base_date_for(dl, product, today, spec)
+        if base is None:
+            return None
+        if kind == "business_days_after_base":
+            return add_business_days(base, n, cal)
+        return _roll_date(base + datetime.timedelta(days=n), dl.get("roll", "none"), cal)
     return None
 
 
@@ -303,6 +355,17 @@ def deadline_for_days_late(
     if band is None:
         return None
     return deadline_for(band, today, make_calendar(spec))
+
+
+def product_deadline(
+    product: dict, today: datetime.date, spec: dict, cal: dict | None = None
+) -> datetime.date | None:
+    """Promise deadline of one product: its band's deadline, counted from the product's base
+    for the *_after_base kinds. None when the band, the deadline or the base is unresolved."""
+    band = band_for(_days_late(product, spec), spec)
+    if band is None:
+        return None
+    return deadline_for(band, today, cal if cal is not None else make_calendar(spec), product, spec)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -372,7 +435,65 @@ def callback_window_gaps(spec: dict) -> list[str]:
     for key in ("inclusive", "must_be_after_now"):
         if not isinstance(cw.get(key), bool):
             gaps.append(key)
+    if "per_weekday" in cw:
+        entries = cw.get("per_weekday")
+        if not isinstance(entries, list) or not entries:
+            gaps.append("per_weekday")
+        else:
+            for i, entry in enumerate(entries[:ATTEMPT_CAP]):
+                if not _per_weekday_entry_ok(entry):
+                    gaps.append("per_weekday[" + str(i) + "].hours")
     return gaps
+
+
+def _per_weekday_entry_ok(entry: object) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    days = entry.get("weekdays")
+    if not isinstance(days, list) or not days:
+        return False
+    for w in days:
+        if not isinstance(w, str) or w.lower() not in WEEKDAYS:
+            return False
+    if parse_hhmm(entry.get("hour_start")) is None or parse_hhmm(entry.get("hour_end")) is None:
+        return False
+    return "inclusive" not in entry or isinstance(entry.get("inclusive"), bool)
+
+
+def callback_window_for(day: datetime.date, spec: dict) -> dict:
+    """The callback window that applies on a date: the single window, with hour_start, hour_end
+    and inclusive replaced by the first per_weekday entry that lists the date's weekday (an
+    entry without inclusive keeps the single window's value). must_be_after_now always comes
+    from the single window."""
+    cw = _callback_window(spec)
+    out = dict(cw)
+    if "per_weekday" in out:
+        del out["per_weekday"]
+    entries = cw.get("per_weekday")
+    if isinstance(entries, list):
+        name = WEEKDAYS[day.weekday()]
+        for entry in entries[:ATTEMPT_CAP]:
+            if not isinstance(entry, dict):
+                continue
+            listed = [str(w).lower() for w in (entry.get("weekdays") or []) if isinstance(w, str)]
+            if name in listed:
+                out["hour_start"] = entry.get("hour_start")
+                out["hour_end"] = entry.get("hour_end")
+                if "inclusive" in entry:
+                    out["inclusive"] = entry.get("inclusive")
+                break
+    return out
+
+
+def callback_hours_text(dates: list, spec: dict) -> str:
+    """One line per date: '<Weekday> <iso>: HH:MM to HH:MM (both included | end excluded)'."""
+    lines = []
+    for d in dates[:DAY_CAP]:
+        w = callback_window_for(d, spec)
+        hours = str(w.get("hour_start", "")) + " to " + str(w.get("hour_end", ""))
+        hours += " (both included)" if w.get("inclusive") else " (end excluded)"
+        lines.append(_day_label(d) + ": " + hours)
+    return "\n".join(lines)
 
 
 def allowed_callback_dates(today: datetime.date, spec: dict, cal: dict) -> list[datetime.date]:
@@ -418,7 +539,7 @@ def check_callback(proposed: object, now: object, spec: dict, cal: dict) -> dict
         return {"status": "window_unspecified", "date": date_s, "time": time_s}
     if p.date() not in allowed_callback_dates(n.date(), spec, cal):
         return {"status": "day_not_allowed", "date": date_s, "time": time_s}
-    cw = _callback_window(spec)
+    cw = callback_window_for(p.date(), spec)
     start = parse_hhmm(cw.get("hour_start"))
     end = parse_hhmm(cw.get("hour_end"))
     t = p.hour * 60 + p.minute
@@ -469,17 +590,65 @@ def full_for(product: dict, spec: dict) -> float | None:
     return round(v, _decimals(spec)) if v is not None else None
 
 
+def _percent_floor(product: dict, rule: object, spec: dict) -> float | None:
+    """Floor = percent of an account amount field, rounded to rounding_decimals.
+
+    Integer arithmetic only (no float rounding error) for the modes half_up, half_even, up and
+    down; without rounding_mode the same round() convention as every other amount. None when
+    the rule, the field or the field's value is missing or unreadable.
+    """
+    if not isinstance(rule, dict):
+        return None
+    field = rule.get("of_field")
+    base = to_number(product.get(field)) if isinstance(field, str) and field else None
+    percent = to_number(rule.get("percent"))
+    if base is None or percent is None or base < 0 or percent < 0:
+        return None
+    decimals = _decimals(spec)
+    scale = 10**decimals
+    units = int(round(base * scale))
+    mode = _amounts(spec).get("rounding_mode")
+    if mode not in ("half_up", "half_even", "up", "down"):
+        return round(units * percent / 100 / scale, decimals)
+    num = units * int(round(percent * 1000))
+    den = 100000
+    if mode == "half_up":
+        q = (2 * num + den) // (2 * den)
+    elif mode == "up":
+        q = -((-num) // den)
+    elif mode == "down":
+        q = num // den
+    else:
+        q = num // den
+        twice = 2 * (num - q * den)
+        if twice > den or (twice == den and q % 2 == 1):
+            q += 1
+    return round(q / scale, decimals)
+
+
 def floor_for(product: dict, spec: dict) -> float | None:
+    """Lowest acceptable amount. Sources, first one configured wins: floor_fields[type],
+    floor_percent[type], floor_default_field, floor_default_percent. A source whose input is
+    missing or unreadable gives None; it never falls through to another source."""
     am = _amounts(spec)
     ptype = _product_type(product, spec)
     floor_fields = am.get("floor_fields") or {}
     field = floor_fields.get(ptype) if isinstance(ptype, str) else None
-    if not field:
-        field = am.get("floor_default_field")
-    if not field:
-        return None
-    v = to_number(product.get(field))
-    return round(v, _decimals(spec)) if v is not None else None
+    if field:
+        v = to_number(product.get(field))
+        return round(v, _decimals(spec)) if v is not None else None
+    percents = am.get("floor_percent") or {}
+    rule = percents.get(ptype) if isinstance(ptype, str) else None
+    if rule:
+        return _percent_floor(product, rule, spec)
+    field = am.get("floor_default_field")
+    if field:
+        v = to_number(product.get(field))
+        return round(v, _decimals(spec)) if v is not None else None
+    rule = am.get("floor_default_percent")
+    if rule:
+        return _percent_floor(product, rule, spec)
+    return None
 
 
 def classify_amount(amount: object, full: object, floor: object = None) -> str:
@@ -549,7 +718,7 @@ def attempt_offer(
     bands = attempt.get("bands")
     if isinstance(bands, list) and band.get("name") not in bands:
         return None
-    deadline = deadline_for(band, today, cal)
+    deadline = product_deadline(product, today, spec, cal)
     date_rule = attempt.get("date_rule")
     d = None
     if date_rule == "last_business_day_this_week_or_next_if_today":
@@ -560,6 +729,10 @@ def attempt_offer(
         d = today
     elif date_rule == "next_business_day":
         d = next_business_day_after(today, cal)
+    elif date_rule == "business_days_after_today":
+        count = to_number(attempt.get("date_n"))
+        if count is not None and count >= 0:
+            d = add_business_days(today, int(count), cal)
     if d is not None and deadline is not None and d > deadline:
         d = deadline
     amount_rule = attempt.get("amount_rule")
@@ -606,8 +779,7 @@ def one_date_for_all(
     for p in products:
         if not isinstance(p, dict):
             continue
-        band = band_for(_days_late(p, spec), spec)
-        deadline = deadline_for(band, today, cal) if band is not None else None
+        deadline = product_deadline(p, today, spec, cal)
         r = check_promise_date(proposed, today, deadline, cal)
         status = r["status"]
         capped = False
@@ -715,9 +887,11 @@ def spoken_product_name(product: dict, spec: dict) -> str:
 def _numeric_fields(spec: dict) -> tuple[list, str]:
     am = _amounts(spec)
     amount_fields = []
+    rules = list((am.get("floor_percent") or {}).values()) + [am.get("floor_default_percent")]
+    percent_fields = [r.get("of_field") for r in rules if isinstance(r, dict)]
     for f in [am.get("full_amount_field"), am.get("floor_default_field")] + list(
         (am.get("floor_fields") or {}).values()
-    ):
+    ) + percent_fields:
         if isinstance(f, str) and f and f not in amount_fields:
             amount_fields.append(f)
     days = (spec.get("account_fields") or {}).get("days_late") or ""
@@ -829,6 +1003,25 @@ def _day_label(d: datetime.date) -> str:
     return WEEKDAYS[d.weekday()].capitalize() + " " + d.isoformat()
 
 
+def calendar_summary(cal: dict) -> str:
+    """The business week in words, from the calendar's own weekend and week start."""
+    working = []
+    weekend = []
+    for i in range(7):
+        idx = (cal["week_start"] + i) % 7
+        if idx in cal["weekend"]:
+            weekend.append(WEEKDAYS[idx].capitalize())
+        else:
+            working.append(WEEKDAYS[idx].capitalize())
+    return (
+        "Business days of the week: "
+        + (", ".join(working) if working else "none")
+        + ". Weekend days (never business days): "
+        + (", ".join(weekend) if weekend else "none")
+        + "."
+    )
+
+
 def _date_facts(now: datetime.datetime, spec: dict, cal: dict) -> str:
     today = now.date()
     lines = []
@@ -883,12 +1076,20 @@ def _date_facts(now: datetime.datetime, spec: dict, cal: dict) -> str:
         )
     elif cw:
         allowed = allowed_callback_dates(today, spec, cal)
-        hours = str(cw.get("hour_start", "")) + " to " + str(cw.get("hour_end", ""))
-        hours += " (both included)" if cw.get("inclusive") else " (end excluded)"
-        text = "Callback dates allowed: " + ", ".join(_day_label(d) for d in allowed) + "; hours " + hours
-        if cw.get("must_be_after_now"):
-            text += "; the time must be later than now (" + _hhmm(now) + " today)"
-        lines.append(text + ".")
+        if cw.get("per_weekday"):
+            text = "Callback dates allowed: " + ", ".join(_day_label(d) for d in allowed)
+            text += "; the hours depend on the date:\n" + callback_hours_text(allowed, spec)
+            if cw.get("must_be_after_now"):
+                text += "\nThe time must be later than now (" + _hhmm(now) + " today)."
+            lines.append(text)
+        else:
+            hours = str(cw.get("hour_start", "")) + " to " + str(cw.get("hour_end", ""))
+            hours += " (both included)" if cw.get("inclusive") else " (end excluded)"
+            text = "Callback dates allowed: " + ", ".join(_day_label(d) for d in allowed) + "; hours " + hours
+            if cw.get("must_be_after_now"):
+                text += "; the time must be later than now (" + _hhmm(now) + " today)"
+            lines.append(text + ".")
+    lines.append(calendar_summary(cal))
     return "\n".join(lines)
 
 
@@ -915,7 +1116,16 @@ def _product_block(i: int, product: dict, today: datetime.date | None, spec: dic
     if today is None:
         lines.append("- latest promise date: unknown (today's date is unknown)")
         return "\n".join(lines)
-    lines.append("- latest promise date: " + _iso(deadline_for(band, today, cal)))
+    latest = product_deadline(product, today, spec, cal)
+    lines.append("- latest promise date: " + _iso(latest))
+    if latest is not None:
+        dates = business_days_through(today, latest, cal)
+        if len(dates) > LISTED_PROMISE_DATES:
+            listed = ", ".join(_day_label(d) for d in dates[:LISTED_PROMISE_DATES])
+            listed += ", ... last: " + _day_label(dates[-1])
+        else:
+            listed = ", ".join(_day_label(d) for d in dates) if dates else "none"
+        lines.append("- allowed promise dates (every business day up to the latest promise date): " + listed)
     for k in range(1, max_attempts(spec) + 1):
         offer = attempt_offer(k, product, today, spec, cal)
         if offer is None:
@@ -931,6 +1141,37 @@ def _product_block(i: int, product: dict, today: datetime.date | None, spec: dic
                 text += (" [a repeat of the floor offer: use it only after the customer has clearly refused the floor offer, "
                          "never in reply to an answer that is not a refusal]")
         lines.append(text)
+    return "\n".join(lines)
+
+
+def one_date_table(products: list, today: datetime.date, spec: dict, cal: dict) -> str:
+    """For several products capped to their own deadlines: what each product gets when the
+    customer names one date for all. '' unless the policy caps each product to its own deadline
+    and at least two products have different deadlines."""
+    mode = (spec.get("multi_product") or {}).get("one_date_for_all")
+    if mode != "cap_each_to_own_deadline":
+        return ""
+    deadlines = []
+    for prod in products[:ATTEMPT_CAP]:
+        d = product_deadline(prod, today, spec, cal)
+        if d is not None:
+            deadlines.append(d)
+    if len(deadlines) < 2 or min(deadlines) == max(deadlines):
+        return ""
+    dates = business_days_through(today, max(deadlines), cal)
+    lines = ["One date for all products (each product is capped to its own latest promise date):"]
+    for day in dates[:LISTED_BUSINESS_DAYS]:
+        parts = []
+        for r in one_date_for_all(day.isoformat(), products[:ATTEMPT_CAP], today, spec, cal):
+            got = parse_date(r["date"])
+            parts.append(str(r["product_id"]) + " -> " + (_day_label(got) if got is not None else "not possible"))
+        lines.append("If the customer names " + _day_label(day) + " for all products: " + ", ".join(parts))
+    if len(dates) > LISTED_BUSINESS_DAYS:
+        parts = []
+        for r in one_date_for_all(dates[-1].isoformat(), products[:ATTEMPT_CAP], today, spec, cal):
+            got = parse_date(r["date"])
+            parts.append(str(r["product_id"]) + " -> " + (_day_label(got) if got is not None else "not possible"))
+        lines.append("If the customer names a later date, up to " + _day_label(dates[-1]) + ": " + ", ".join(parts))
     return "\n".join(lines)
 
 
@@ -976,8 +1217,7 @@ def compute_facts(vars_in: dict, spec: dict, io: dict) -> dict[str, object]:
     latest = None
     if today is not None:
         for prod in products[:slots]:
-            b = band_for(_days_late(prod, spec), spec)
-            dl = deadline_for(b, today, cal) if b is not None else None
+            dl = product_deadline(prod, today, spec, cal)
             if dl is not None and (latest is None or dl > latest):
                 latest = dl
         if not callback_window_gaps(spec):
@@ -996,7 +1236,7 @@ def compute_facts(vars_in: dict, spec: dict, io: dict) -> dict[str, object]:
             out[s + "band"] = _plain(band.get("name"))
             out[s + "attempts"] = _plain(band.get("persuasion_attempts"))
             if today is not None:
-                out[s + "deadline"] = _iso(deadline_for(band, today, cal))
+                out[s + "deadline"] = _iso(product_deadline(prod, today, spec, cal))
                 for k in range(1, max_attempts(spec) + 1):
                     offer = attempt_offer(k, prod, today, spec, cal)
                     if offer is not None:
@@ -1008,6 +1248,10 @@ def compute_facts(vars_in: dict, spec: dict, io: dict) -> dict[str, object]:
             str(len(products) - slots) + " more product(s) on the account are beyond the "
             + str(slots) + " this call handles."
         )
+    if today is not None:
+        table = one_date_table(products[:slots], today, spec, cal)
+        if table:
+            blocks.append(table)
     out[p + "product_facts"] = "\n\n".join(blocks) if blocks else "No product data is available."
     out[p + "facts_status"] = "ok"
     return out

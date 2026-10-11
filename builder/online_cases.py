@@ -169,14 +169,42 @@ def _product_ready(p: dict, today: datetime.date, spec: dict, cal: dict) -> bool
     band = engine.band_for(p.get(str((spec.get("account_fields") or {}).get("days_late") or "")), spec)
     if band is None or engine.full_for(p, spec) is None:
         return False
-    return engine.deadline_for(band, today, cal) is not None
+    return engine.product_deadline(p, today, spec, cal) is not None
 
 
 def _deadline(p: dict, today: datetime.date, spec: dict, cal: dict) -> datetime.date:
-    band = engine.band_for(p.get(str((spec.get("account_fields") or {}).get("days_late") or "")), spec)
-    d = engine.deadline_for(band, today, cal) if band is not None else None
+    d = engine.product_deadline(p, today, spec, cal)
     assert d is not None
     return d
+
+
+def _formula_fields(spec: dict) -> list[str]:
+    """Account field names that the spec's deadline formulas read (empty for today-based formulas)."""
+    af = spec.get("account_fields") or {}
+    names: list[str] = []
+    for band in spec.get("bands") or []:
+        dl = band.get("deadline") if isinstance(band, dict) else None
+        if not isinstance(dl, dict) or not str(dl.get("kind", "")).endswith("_after_base"):
+            continue
+        key = "due_date" if dl.get("base") == "due_date_field" else "days_late"
+        if af.get(key):
+            names.append(str(af[key]))
+    return sorted(set(names))
+
+
+def _missing_formula_field(spec: dict, carriers: list[Carrier]) -> str | None:
+    """A field the deadline formula needs that no carrier product holds, or None."""
+    for f in _formula_fields(spec):
+        if not any(f in p for c in carriers for p in c.products):
+            return f
+    return None
+
+
+def _no_carrier(spec: dict, carriers: list[Carrier], prefix: str, why: str = "no usable carrier account") -> str:
+    f = _missing_formula_field(spec, carriers)
+    if f is not None:
+        return f"{prefix}: no carrier account holds the field '{f}' that the deadline formula needs"
+    return f"{prefix}: {why}"
 
 
 def _pick(spec: dict, carriers: list[Carrier], pred: Any, allow_faults: bool = False) -> Carrier | None:
@@ -325,22 +353,25 @@ def _date_over_limit(spec: dict, carriers: list[Carrier], cal: dict) -> tuple[Ge
     if (spec.get("promise_rules") or {}).get("on_after_deadline") != "offer_deadline":
         return None, "date clamping: the spec does not offer the deadline for a date beyond it"
 
-    def ok(c: Carrier, today: datetime.date) -> bool:
-        return _product_ready(c.products[0], today, spec, cal)
+    def plan(c: Carrier, today: datetime.date) -> tuple[datetime.date, datetime.date, str]:
+        """(requested date, last acceptable date, promise date); raises when this carrier cannot serve the kind."""
+        p = c.products[0]
+        assert _product_ready(p, today, spec, cal)
+        dl = _deadline(p, today, spec, cal)
+        limit = engine.previous_business_day_on_or_before(dl, cal)
+        assert limit >= today and engine.is_business_day(limit, cal)
+        beyond = engine.next_business_day_after(dl, cal)
+        assert engine.check_promise_date(limit, today, dl, cal)["status"] == "ok"
+        assert engine.check_promise_date(beyond, today, dl, cal)["status"] == "after_deadline"
+        return beyond, limit, limit.isoformat()
 
-    c = _pick(spec, carriers, ok)
+    c = _pick(spec, carriers, lambda c, t: bool(plan(c, t)))
     if c is None:
-        return None, "date clamping: no usable carrier account"
+        return None, _no_carrier(spec, carriers, "date clamping", "no carrier account has a product whose deadline allows a business-day promise")
     today = _now_for(spec, c.variables).date()  # type: ignore[union-attr]
+    beyond, limit, date = plan(c, today)
     p = c.products[0]
-    dl = _deadline(p, today, spec, cal)
-    if not engine.is_business_day(dl, cal):
-        return None, "date clamping: the deadline itself is not a business day, so no promise could be recorded on it"
-    beyond = engine.next_business_day_after(dl, cal)
-    r = engine.check_promise_date(beyond, today, dl, cal)
-    if r["status"] != "after_deadline":
-        return None, "date clamping: the engine does not clamp the chosen date"
-    exp = _promise_expected(spec, c, [(0, engine.full_for(p, spec), r["date"])])  # type: ignore[list-item]
+    exp = _promise_expected(spec, c, [(0, engine.full_for(p, spec), date)])  # type: ignore[list-item]
     if exp is None:
         return None, "date clamping: the outcome table has no outcome for a recorded promise"
     script = (f"Takes the call, answers the security questions correctly and says the full overdue amount can be paid on "
@@ -484,19 +515,25 @@ def _multi_one_date(spec: dict, carriers: list[Carrier], cal: dict) -> tuple[Gen
     if not mp.get("enabled") or mp.get("one_date_for_all") != "cap_each_to_own_deadline":
         return None, "multi-product: not enabled or no date-capping rule in the spec"
 
-    def ok(c: Carrier, today: datetime.date) -> bool:
-        if len(c.products) < 2 or not all(_product_ready(p, today, spec, cal) for p in c.products):
-            return False
-        return len({_deadline(p, today, spec, cal) for p in c.products}) > 1
+    def plan(c: Carrier, today: datetime.date) -> tuple[datetime.date, list[dict]]:
+        """(requested date, engine result per product); raises when this carrier cannot serve the kind."""
+        assert len(c.products) >= 2 and all(_product_ready(p, today, spec, cal) for p in c.products)
+        deadlines = [_deadline(p, today, spec, cal) for p in c.products]
+        assert len(set(deadlines)) > 1
+        latest = engine.previous_business_day_on_or_before(max(deadlines), cal)
+        assert latest >= today
+        res = engine.one_date_for_all(latest.isoformat(), c.products, today, spec, cal)
+        assert len(res) == len(c.products)
+        for r in res:
+            d = engine.parse_date(r["date"])
+            assert d is not None and d >= today and engine.is_business_day(d, cal)
+        return latest, res
 
-    c = _pick(spec, carriers, ok)
+    c = _pick(spec, carriers, lambda c, t: bool(plan(c, t)))
     if c is None:
-        return None, "multi-product: no carrier account has products with different deadlines"
+        return None, _no_carrier(spec, carriers, "multi-product", "no carrier account has products with different deadlines that all allow a business-day promise")
     today = _now_for(spec, c.variables).date()  # type: ignore[union-attr]
-    latest = max(_deadline(p, today, spec, cal) for p in c.products)
-    res = engine.one_date_for_all(latest.isoformat(), c.products, today, spec, cal)
-    if len(res) != len(c.products) or any(not r["date"] for r in res):
-        return None, "multi-product: the engine gives no date for some product"
+    latest, res = plan(c, today)
     rows = [(i, engine.full_for(p, spec), r["date"]) for i, (p, r) in enumerate(zip(c.products, res))]
     exp = _promise_expected(spec, c, rows)  # type: ignore[arg-type]
     if exp is None:
@@ -505,6 +542,26 @@ def _multi_one_date(spec: dict, carriers: list[Carrier], cal: dict) -> tuple[Gen
               f"{spoken_date(latest)}, one date for all. Accepts the earlier day the caller names for any product and confirms the read-back.")
     checks = _promise_checks(spec) + ["every product gets its own promise", "no promise is later than that product's deadline"]
     return _base("multi_one_date", c, "One date for several products", "Multi-product", "hard", script, checks, exp), ""
+
+
+def coverage_report(spec: dict, cases: list[GenCase], skipped: list[str]) -> list[dict[str, Any]]:
+    """For the kinds that exercise the date caps: applicable (the spec has the rule), generated, and why not."""
+    mp = spec.get("multi_product") or {}
+    rows = (
+        ("date_clamping", "date_over_limit", "date clamping",
+         (spec.get("promise_rules") or {}).get("on_after_deadline") == "offer_deadline"),
+        ("multi_product", "multi_one_date", "multi-product",
+         bool(mp.get("enabled")) and mp.get("one_date_for_all") == "cap_each_to_own_deadline"),
+    )
+    kinds = {c.kind for c in cases}
+    out: list[dict[str, Any]] = []
+    for name, kind, prefix, applicable in rows:
+        generated = kind in kinds
+        reason = ""
+        if applicable and not generated:
+            reason = next((w for w in skipped if w.startswith(prefix) or w == f"truncated: {kind}"), "no case was generated")
+        out.append({"kind": name, "applicable": bool(applicable), "generated": generated, "reason": reason})
+    return out
 
 
 def generate_cases(spec: dict, carriers: list[Carrier], limit: int = MAX_CASES) -> tuple[list[GenCase], list[str]]:
@@ -526,11 +583,15 @@ def generate_cases(spec: dict, carriers: list[Carrier], limit: int = MAX_CASES) 
     add(_identity_lockout(spec, carriers))
     add(_promise_full(spec, carriers, cal))
     add(_date_over_limit(spec, carriers, cal))
+    add(_multi_one_date(spec, carriers, cal))
     add(_amount_floor(spec, carriers, cal))
     add(_third_party_callback(spec, carriers, cal))
+    add(_promise_full(spec, carriers, cal, kind="tool_failure", need_fault=True))
     intents, why = _intent_cases(spec, carriers, cal, spec_obj)
     cases.extend(intents)
     skipped.extend(why)
-    add(_multi_one_date(spec, carriers, cal))
-    add(_promise_full(spec, carriers, cal, kind="tool_failure", need_fault=True))
-    return cases[: max(0, limit)], skipped
+    # coverage kinds come first, so truncation drops the intent cases before anything else
+    limit = max(0, limit)
+    for c in cases[limit:]:
+        skipped.append(f"truncated: {c.kind}")
+    return cases[:limit], skipped

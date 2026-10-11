@@ -1,0 +1,7 @@
+{
+  "task_id": "task-rehearsal-fixes",
+  "task_description": "Fix the eight generic defects found by the rehearsal of the build-the-builder voice-agent pipeline: (1) enforce-only create_promise hook, (2) optional schema/engine/compiler support for per-account deadline and floor formulas and per-weekday callback windows, (3) gap guard + aggregation default, (4) explicit computed date lists in prompts and facts, (5) opening order, (6) guaranteed termination, (7) online_test robustness, (8) extraction/prompt polish. Backward compatible, spec-driven, no brief values in builder/, build.py or scripts/, NO git commits, NO live/online work. Master plan: /Users/melih/Desktop/build-the-builder/.agents/tasks/rehearsal-fixes-plan.md",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004", "FEAT-005"],
+  "blocked_reason": null
+}
