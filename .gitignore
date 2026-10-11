@@ -18,3 +18,4 @@ out/
 *.workflow.json
 !tests/**/*.workflow.json
 mock/dist/
+.personas_flow.json

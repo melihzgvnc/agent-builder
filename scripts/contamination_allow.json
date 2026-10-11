@@ -2,5 +2,9 @@
   {
     "token": "no valid callback time",
     "reason": "Generic builder wording for the case where the model found no usable callback time. It is a spec fixture leaf, not a sentence of any brief, and carries no brief value."
+  },
+  {
+    "token": "Less than the minimum",
+    "reason": "Generic English comparison phrase used in two older, pre-existing builder messages; it also happens to occur as a table cell of a case document. It carries no case value."
   }
 ]

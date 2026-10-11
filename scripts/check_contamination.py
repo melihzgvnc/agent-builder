@@ -41,10 +41,16 @@ DEFAULT_BRIEFS: tuple[Path, ...] = (
     REPO_ROOT / "rehearsal" / "brief-1.md",
     REPO_ROOT / "rehearsal" / "brief-2.md",
 ) if p.is_file())
+CASE_FOLDER: Path = REPO_ROOT / "FinalCase"
+# Documents of a case folder (when present) are banned-token sources too; the cloud-worker sample dir is ignored.
+CASE_DOCS: tuple[Path, ...] = tuple(
+    sorted(p for ext in ("*.md", "*.txt") for p in CASE_FOLDER.rglob(ext) if "cloudflare-mock" not in p.parts)
+) if CASE_FOLDER.is_dir() else ()
+DEFAULT_BRIEFS = DEFAULT_BRIEFS + CASE_DOCS
 DEFAULT_FIXTURES: tuple[Path, ...] = (
     REPO_ROOT / "tests" / "fixtures" / "spec_brief_a.json",
     REPO_ROOT / "tests" / "fixtures" / "spec_brief_ab.json",
-)
+) + tuple(p for p in (CASE_FOLDER / "test-environment" / "test-customers.json",) if p.is_file())
 DEFAULT_OPENAPI: Path = REPO_ROOT / "tools" / "openapi.json"
 DEFAULT_SCHEMA: Path = REPO_ROOT / "builder" / "spec_schema.json"
 DEFAULT_ALLOW: Path = REPO_ROOT / "scripts" / "contamination_allow.json"
