@@ -17,3 +17,4 @@ out/
 .personas.json
 *.workflow.json
 !tests/**/*.workflow.json
+mock/dist/

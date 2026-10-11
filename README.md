@@ -1,125 +1,50 @@
-# Build the Builder
+# agent-builder
 
-**Kit version 3** (10 October 2026). The file `VERSION` holds the number. When we update the kit, the number goes up and the changes are listed here.
+Reads bank briefs (clean specs or raw material) plus a tool contract and builds, tests and publishes a Freya phone agent with no manual step.
 
-- v3: the example builder waits for its own test run (up to 20 minutes per command) instead of stopping before the results arrive. On Brief A it built an agent that passed 10 of the 10 practice customers in one run.
-- v2: `examples/base-agent.json` (an example phone agent) and `examples/agent_builder.py` with the skill `.claude/skills/build-phone-agent` (an example builder) replace `examples/minimal_builder.py`.
-- v1: first release.
-
-You write a **builder**: a program that reads a bank's brief and creates a phone agent on Freya.
-We put that phone agent in front of simulated customers. The share it handles correctly is your score.
-
-One simulated customer is one case. A step of a phone agent is called a node in the platform's documents.
-
-## The ten-minute start
-
-You need Python 3.10 or newer.
-
-```bash
-cp env.example env.sh        # put your Freya API key in it, and a team key you make up
-source env.sh
-
-# 1. Put the example agent on Freya and test it. It prints {"workflow_id": ..., "agent_id": ...}
-python3 -c "import freya,json; print(freya.save_workflow('base', json.load(open('examples/base-agent.json'))))"
-python3 tools/run_cases.py <agent_id> --brief A            # ten practice customers, 3 to 11 minutes
-
-# 2. Let the example builder build one from the brief
-pip install claude-agent-sdk
-python3 examples/agent_builder.py briefs/brief-a.md
-python3 examples/agent_builder.py briefs/brief-a.md briefs/brief-b.md   # Brief B builds on Brief A, so pass both
+```
+briefs + contract  ->  extract (LLM) -> validate -> compile -> lint -> offline checks
+                   ->  save -> read back -> export -> smoke test -> online test (self-repair)
 ```
 
-`run_cases.py` prints one line per customer: pass or fail, the tool calls the agent made, and the reason for a failure.
+The LLM only turns the briefs into a typed policy spec (`builder/spec_schema.json`). Everything after that is deterministic: dates, amounts, hooks and the workflow graph are generated from the spec, so nothing in `builder/` is specific to one brief.
 
-`examples/base-agent.json` is an agent, not a builder. It is the same two-step workflow that is already in your workspace: check identity, then take a payment promise. It uses four of the seven tools, so it handles only the simplest customers: in one run it passed 2 of the 13 practice customers. Read it to see what a valid workflow looks like.
-
-`examples/agent_builder.py` is a builder. It runs Claude through the Claude Agent SDK with one skill, `.claude/skills/build-phone-agent/SKILL.md`. Claude reads the brief and the tool API file, writes the workflow, runs the practice customers and fixes what fails. The skill is short on purpose. Your job is a better builder: a better skill, more skills, your own code, or another agent altogether. It needs a Claude login or `ANTHROPIC_API_KEY`.
-
-## What is in this kit
-
-| Path | What it is |
-|---|---|
-| `briefs/brief-a.md` | Freya Bank's specification for customers late on one product. 47 rules. Read all of it. |
-| `briefs/brief-b.md` | The extra rules for customers with up to three products. It builds on Brief A. |
-| `tools/openapi.json` | The bank's tool API that the phone agent calls during a call. |
-| `public-test-set.json` | 13 practice customers: what each one does and what the bank's records must show afterwards. |
-| `examples/base-agent.json` | An example phone agent: two steps, four tools. The same one that is in your workspace. |
-| `examples/agent_builder.py` | An example builder on the Claude Agent SDK. Claude builds, tests and fixes the agent. |
-| `.claude/skills/build-phone-agent/SKILL.md` | The one skill the example builder uses. |
-| `freya.py` | A small client for the Freya API. Standard library only. |
-| `tools/run_cases.py`, `tools/score.py` | Run the practice customers against a phone agent and score it. |
-| `docs/workflow-format.md` | What a phone agent is made of: steps, prompts, variables, routes. |
-| `docs/tools-and-code.md` | Tools that call an API, code steps, hooks, where a tool's response lands. |
-| `docs/api.md` | The API calls a builder needs. |
-
-## How you are scored
-
-A customer counts as handled when all of these hold:
-
-1. **Outcome: the bank's records are right.** The outcome, every promise (product, amount, date), every note, callback and transfer match what the brief requires. The scorer reads them from the bank, not from what the agent said.
-2. **Policy: the conversation stayed inside the brief.**
-3. **Honesty: the phone agent told the customer the truth**, for example it never says a promise is recorded when the tool call failed.
-
-A judge model reads the transcript for 2 and 3, against the checks listed for that customer.
-
-There is no partial credit. Your score is the share of customers handled.
-
-The same phone agent can pass a customer in one run and fail it in the next. Treat one green run as a hint, not as proof.
-
-## The final
-
-- On Sunday we publish briefs you have not seen. They are the same kind of call with different rules: other numbers and limits, other identity questions, another outcome table, another calendar. Their form can differ too: one final brief is a clean specification, the other is raw bank material (a mail, a policy extract, a memo that changes it, a code list).
-- Each final brief comes with its own tool API file. The seven tool names stay the same. The fields and the allowed values can change.
-- After the final briefs open you may fix a bug in your builder. You may not write anything from a final brief into it: no rule, no value, no name. Fixing a crash on a table your parser did not expect is allowed. Adding the new brief's holiday dates or outcome names to your code or prompts is not.
-- You run your builder once on each, with no manual step, and submit the phone agents it created, your code and the builder's trace.
-- You export each phone agent to a file with `freya.export_workflow(workflow_id, "<brief>.workflow.json")` and submit those files. We load them into our own workspace to test them, so what you export is what we score.
-- We test those phone agents on customers nobody has seen, on several calendar days, three times each. A customer counts only when all three runs pass. A phone agent that is right most of the time is not right.
-- Final customers can have up to three products, as in Brief B.
-- Final customers talk like people. They give a number in two parts, correct themselves, talk about other things, ask a question back, or say amounts and dates in words. The facts stay the same. Practise with `--style pieces`, `corrects`, `talkative`, `asks_back` or `in_words` on `run_cases.py`.
-
-So build something that reads a brief, not something that knows this one. Whatever your builder can take from the brief, it should take from the brief.
-
-## Final event workflow
-
-1. Mock bank: `uv run python mock/gen_mock.py --contract <contract.json> --customers <customers.json> --out mock/dist`, then deploy it as described in `mock/DEPLOY.md`. The mock is generated from the contract and the test customers; nothing is deployed by the builder.
-2. Build from the downloaded folder: `uv run python build.py --folder DIR --server-url https://<name>.<subdomain>.workers.dev/v1`. Briefs, contract and customers are found by content; `--server-url` (or `BUILDER_SERVER_URL`) replaces `servers[0].url` of the contract, so the agent's tools call your mock.
-3. Trace: each run writes `runs/<slot>-<time>/trace.log` (start and end in UTC and local time, model calls, Freya artifacts, tests, the exported file, a `RUN SUMMARY` block and the full console output under `CONSOLE`) and `trace.jsonl`. `FREYA_API_KEY`, `FREYA_BANK_TEAM_KEY`, `ANTHROPIC_API_KEY` and `BUILDER_MOCK_AUTH_VALUE` are masked in both files.
-4. Bundle one run: `uv run python scripts/make_submission.py runs/<run folder>` writes `submission/<run folder>/` with the exported `<slot>.workflow.json`, `trace.log`, `trace.jsonl`, `compile_report.json`, `spec.json` and a `MANIFEST.md` with sha256 per file. If the run has no export, the script exports it when `FREYA_API_KEY` is set. It runs no git command. `*.workflow.json` is gitignored, so commit it with `git add -f`.
-
-## Rules
-
-- Your builder takes brief files as input and creates the phone agent with no manual step. Do not edit a phone agent by hand after it is created.
-- The phone agent runs on the model set in `freya.py` (`AGENT_LLM`). Do not change it. Your builder may use any model or coding agent.
-- The phone agent may call only the bank's tool API. Code steps and hooks inside the workflow are allowed and expected.
-- Use `freya.save_workflow(...)` or update your workflow in place. A workspace holds 200 workflows. A builder that creates a new one on every run fills it up and leaves you with a list nobody can read.
-- One simulation runs at a time per workspace. A ten-customer run takes 3 to 11 minutes. A second `run_cases.py` started meanwhile waits for the first.
-- A builder run on one brief may take 30 minutes at most, including any test it runs on its own phone agent. You may run it more than once and submit the phone agent of one run, with that run's trace.
-- Equal scores are ranked by the total promised amount on the customers that passed, then by shorter build time, then by earlier submission.
-- Your builder must leave a trace of each run: start and end time, each model call it made (model and a one-line purpose), what it created on Freya, and any test it ran on its own agent. Plain text, no fixed format. You submit one trace per final brief.
-- All data here is synthetic. Do not bring real customer data.
-
-## Rehearsal and checks
+## Run
 
 ```bash
-uv run pytest -q                                   # unit tests, including the contamination scan
-uv run python scripts/check_contamination.py       # no brief value in builder/, build.py, scripts/ (exit 1 on a hit)
-uv run python scripts/rehearse.py briefs/brief-a.md [briefs/brief-b.md] [--spec FILE] [--keep]
+cp env.example env.sh        # fill in FREYA_API_KEY, ANTHROPIC_API_KEY (model key), FREYA_BANK_TEAM_KEY
+set -a && . ./env.sh && set +a
+uv sync
+
+# a folder with BRIEF.md, other documents, the tool contract and test customers
+BUILDER_LLM_MODEL=anthropic/claude-sonnet-5.5 \
+  uv run python build.py --folder <dir> --server-url <bank mock url>/v1
+
+# or explicit files
+uv run python build.py briefs/brief-a.md [briefs/brief-b.md] [--dry] [--spec spec.json]
 ```
 
-- `check_contamination.py` derives its banned tokens from the briefs and spec fixtures at run time. Generic hits go in `scripts/contamination_allow.json`, each with a reason; an unused entry fails.
-- `rehearse.py` runs `build.py ... --dry`, prints a per-stage timing table and exits 1 when a stage is over its budget, the build is over 25 minutes, `workflow.json` is missing, or the lint has an error.
-- Stage budgets (seconds) live in `builder/pipeline.py` as `STAGE_BUDGETS`. `TOTAL_BUDGET_S` is 1500 (25 minutes, 5 under the 30 minute rule). `build.py --budget SECONDS` changes the total.
-- A build always writes `workflow.json`, even when extraction falls back, the spec is invalid, a stage crashes or hangs, or the budget runs out (a generic fallback workflow is written then).
-- A `DEGRADED:` line in `trace.log` marks such a build, and `build.py` prints a warning on stderr. The exit code stays 0 unless a stage crashed.
+Each run writes `runs/<slot>-<timestamp>/` with `workflow.json`, the exported `<name>.workflow.json`, `spec.json`, `compile_report.json`, `trace.log` (everything printed, git commit and source hash included) and `trace.jsonl`. A build always ends with a saved workflow, even when a stage fails (the failure is logged and a degraded flag is set).
 
-## When something does not work
+Bundle one run for submission: `uv run python scripts/make_submission.py <run dir>`.
 
-- `error code: 1010` in an HTML page: your request has no browser-like `User-Agent`. `freya.py` sets one.
-- `Workspace plan limit reached`: you created too many workflows. Update one in place.
-- You changed your builder and the score did not move at all: an updated workflow must be published before a simulation uses it. `freya.save_workflow` publishes. A plain `PUT` does not. See "Update a workflow" in `docs/api.md`.
-- A customer fails and you do not see why: `freya.get_call(call_id)["messages"]` is the full transcript with the tool calls. `run_cases.py --out results/run.json` saves the call id of every customer.
-- Calls end as `customer-ended-call` before the phone agent is done: it was silent too long and the customer hung up, as a person would. `run_cases.py` prints the slowest agent turn per call after every run, and a warning when the median is above 10 seconds. If the same phone agent is fast in the next run, the model was busy and the low score was not yours.
-- You want to see what your phone agent says without waiting for a simulation: `POST /api/v2/chat/message` runs one turn at a time. See `docs/api.md`.
-- The bank answers `unknown product_id`: the model made an id up. Product ids come from `get_account` (`p1`, `p2`, ...). Give them to the model in the tool result, or fill them in with code.
-- A simulation stays at "running" and no call ever starts: the workflow cannot start a call. Try one chat turn. Leave `agent_config` out of the workflow you send.
-- The agent says nothing after a tool call and the customer hangs up: see "Tool results and the next turn" in `docs/tools-and-code.md`.
+## Layout
+
+| Path | What |
+| --- | --- |
+| `build.py`, `builder/` | the builder (pipeline, extractor, compiler, hooks, online test) |
+| `mock/` | data-driven Cloudflare Worker mock of the bank services, see `mock/DEPLOY.md` |
+| `scripts/` | contamination check, submission bundle, rehearsal and diff helpers |
+| `tests/` | unit tests and fixtures (`uv run pytest -q`) |
+| `freya.py`, `tools/`, `public-test-set.json` | kit files from the organizers, used as given |
+| `docs/` | organizers' guidelines (`kit-README.md`, API and workflow format) |
+| `briefs/`, `rehearsal/`, `tests/fixtures/` | practice briefs and fixtures, test data only |
+| `builder/PLATFORM_NOTES.md` | what was verified about the Freya platform |
+| `.agents/tasks/` | development logs and reports |
+
+## Checks
+
+```bash
+uv run pytest -q
+uv run python scripts/check_contamination.py   # no brief value may appear in builder/, build.py, scripts/, mock/
+```
