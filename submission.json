@@ -1,0 +1,10 @@
+{
+  "team": "Melih Ozguvenc",
+  "members": [{ "name": "Melih Ozguvenc", "email": "melihzgvnc@gmail.com" }],
+  "repo": "https://github.com/melihzgvnc/agent-builder",
+  "commit": "5d237f3d7ec452a9568a0243fc4bb5680daecb72",
+  "run_command": "uv run python build.py --folder {case_folder} --server-url https://statement-mock.melihzgvnc.workers.dev --slot final-case --budget 600",
+  "workflow": "submission/final.workflow.json",
+  "trace": "traces/final.log",
+  "mock_url": "https://statement-mock.melihzgvnc.workers.dev"
+}
