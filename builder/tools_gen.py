@@ -129,7 +129,7 @@ def build_tool(
     servers = openapi.get("servers")
     base = servers[0].get("url") if isinstance(servers, list) and servers and isinstance(servers[0], dict) else None
     if not isinstance(base, str) or not base:
-        raise ToolGenError("openapi has no servers[0].url")
+        raise ToolGenError("openapi has no servers[0].url; pass --server-url URL or set BUILDER_SERVER_URL")
     operation = item[method]
     schema = body_schema(openapi, operation)
     fields = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}

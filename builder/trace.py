@@ -110,6 +110,7 @@ class Trace:
         self.start_time: str = _now()
         self._t0: float = time.monotonic()
         self.inputs: list[str] = []
+        self.notes: list[str] = []
         self.stages: list[str] = []
         self.model_calls: list[str] = []
         self.artifacts: list[str] = []
@@ -186,6 +187,11 @@ class Trace:
             slot=slot,
             flags=flags,
         )
+
+    def note(self, msg: str) -> None:
+        """Record an informational line in the INPUTS section (and as a note event)."""
+        self.notes.append(msg)
+        self._event("note", message=msg)
 
     def log_stage(self, name: str, status: str, detail: str, duration_s: float) -> None:
         """Record one pipeline stage result (status: ok, skipped or failed)."""
@@ -320,7 +326,7 @@ class Trace:
     def _write_log(self) -> None:
         sections: dict[str, list[str]] = {
             "START": [f"start: {self.start_time}"],
-            "INPUTS": self.inputs,
+            "INPUTS": [*self.inputs, *(f"note: {n}" for n in self.notes)],
             "BUILDER VERSION": [
                 f"version: {__version__}",
                 f"git_commit: {self.git_commit}",

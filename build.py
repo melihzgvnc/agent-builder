@@ -2,6 +2,7 @@
 
 Usage:
     python build.py <brief.md> [<brief.md> ...] [--openapi PATH] [--slot NAME] [--dry] [--cases FILE] [--spec FILE] [--budget SECONDS]
+    python build.py --folder DIR [--server-url URL] [...]    (briefs, contract and customers are found by content)
 
 Briefs are layered in the order given: each later brief builds on the earlier ones.
 Each run writes only to runs/<slot>-<YYYYmmdd-HHMMSS>/ and prints that folder.
@@ -11,6 +12,7 @@ Each run writes only to runs/<slot>-<YYYYmmdd-HHMMSS>/ and prints that folder.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +23,8 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from builder import folder_input  # noqa: E402
+from builder.inputs import apply_server_url, resolve_server_url  # noqa: E402
 from builder.pipeline import TOTAL_BUDGET_S, make_slot, run_build  # noqa: E402
 
 
@@ -28,15 +32,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the command line; an invalid slot is an argparse error."""
     parser = argparse.ArgumentParser(
         prog="build.py",
-        usage="%(prog)s <brief.md> [<brief.md> ...] [--openapi PATH] [--slot NAME] [--dry] [--cases FILE] [--spec FILE] [--budget SECONDS]",
+        usage="%(prog)s [<brief.md> ...] [--folder DIR] [--openapi PATH] [--server-url URL] [--slot NAME] [--dry] [--cases FILE] [--spec FILE] [--budget SECONDS]",
         description="Build a phone agent from layered briefs (later briefs build on earlier ones).",
     )
-    parser.add_argument("briefs", nargs="+", type=Path, metavar="<brief.md>")
+    parser.add_argument("briefs", nargs="*", type=Path, metavar="<brief.md>")
+    parser.add_argument("--folder", type=Path, default=None, help="input folder: briefs, contract and customers are found by content")
     parser.add_argument(
         "--openapi",
         type=Path,
-        default=ROOT / "tools" / "openapi.json",
-        help="tool API description (default: tools/openapi.json next to build.py)",
+        default=None,
+        help="tool API description (default: the folder's contract, else tools/openapi.json next to build.py)",
+    )
+    parser.add_argument(
+        "--server-url",
+        default=None,
+        metavar="URL",
+        help="replace servers[0].url of the tool API (default: BUILDER_SERVER_URL if set)",
     )
     parser.add_argument("--slot", default=None, help="slot name (default: stem of the last brief)")
     parser.add_argument("--dry", action="store_true", help="skip every stage that needs the network")
@@ -55,6 +66,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"total time budget of the build in seconds (default: {TOTAL_BUDGET_S:g})",
     )
     args = parser.parse_args(argv)
+    if args.folder is None and len(args.briefs) == 1 and args.briefs[0].is_dir():
+        args.folder = args.briefs.pop()
+    args.folder_inputs = None
+    if args.folder is not None:
+        if not args.folder.is_dir():
+            parser.error(f"--folder {args.folder} is not a directory")
+        args.folder_inputs = folder_input.discover(args.folder)
+        args.briefs = [*args.briefs, *args.folder_inputs.briefs]
+    if not args.briefs:
+        parser.error("no briefs given (pass brief files or a --folder that contains one)")
+    if args.openapi is None:
+        found = args.folder_inputs.openapi_path if args.folder_inputs is not None else None
+        args.openapi = found if found is not None else ROOT / "tools" / "openapi.json"
+        if args.folder_inputs is not None and found is None:
+            note = f"no tool API document found in {args.folder}; using {args.openapi}"
+            args.folder_inputs.log.append(f"WARNING: {note}")
+            print(f"WARNING: {note}", file=sys.stderr, flush=True)
+    if args.cases is None and args.folder_inputs is not None:
+        args.cases = args.folder_inputs.customers_path
+    args.server_url = resolve_server_url(args.server_url, os.environ)
+    try:
+        apply_server_url({}, args.server_url)
+    except ValueError as e:
+        parser.error(str(e))
     try:
         args.slot = make_slot(args.briefs, args.slot)
     except ValueError as e:
@@ -93,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
         on_run_dir=_print_run_dir,
         spec_path=Path(args.spec) if args.spec is not None else None,
         budget_s=args.budget,
+        server_url=args.server_url,
+        folder_inputs=args.folder_inputs,
     )
     if _trace_is_degraded(_last_run_dir):
         print("WARNING: degraded build, see trace.log", file=sys.stderr, flush=True)

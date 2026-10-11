@@ -19,10 +19,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from builder import health, online_cases, online_repair, online_runner, readback, selfcheck
+from builder import folder_input, health, online_cases, online_repair, online_runner, readback, selfcheck
 from builder.compiler import compile_fallback, compile_workflow, emergency_workflow
 from builder.extract import stage_extract
 from builder.freya_extra import get_workflow
+from builder.inputs import apply_server_url, load_openapi_doc
 from builder.lint import lint
 from builder.spec import load_spec, spec_to_dict, validate_spec
 from builder.trace import Trace
@@ -120,6 +121,8 @@ class BuildContext:
     deadline: float | None = None  # time.monotonic() value at which the total budget ends
     extract_budget_s: float | None = None
     bank: Any = None  # bank mock adapter for the online test (tests inject a fake)
+    server_url: str | None = None  # overrides servers[0].url of the tool API document
+    extras: list[Path] = field(default_factory=list)  # folder material appended after the briefs
 
 
 class StageSkipped(Exception):
@@ -136,9 +139,17 @@ class NotImplementedStage(StageSkipped):
 def stage_load_inputs(ctx: BuildContext) -> str:
     """Read every brief (in the given layer order) and parse the tool API document."""
     ctx.brief_texts = [Path(b).read_text(encoding="utf-8") for b in ctx.briefs]
-    doc = json.loads(Path(ctx.openapi_path).read_text(encoding="utf-8"))
-    if not isinstance(doc, dict):
-        raise ValueError("openapi document is not a JSON object")
+    for extra_path in ctx.extras:
+        text = folder_input.extra_text(Path(extra_path))
+        if text is None:
+            ctx.trace.note(f"extra material unreadable, left out: {extra_path}")
+            continue
+        ctx.briefs.append(Path(extra_path))
+        ctx.brief_texts.append(text)
+    doc = load_openapi_doc(Path(ctx.openapi_path))
+    if ctx.server_url:
+        doc = apply_server_url(doc, ctx.server_url)
+        ctx.trace.note(f"server_url override: {ctx.server_url}")
     ctx.openapi_doc = doc
     paths = doc.get("paths")
     tools = [str(k).strip("/") for k in paths] if isinstance(paths, dict) else []
@@ -735,9 +746,9 @@ def ensure_workflow_on_disk(
         sources = _read_sources([Path(b) for b in briefs], texts)
         doc: dict[str, Any] = {}
         try:
-            loaded = json.loads(Path(openapi_path).read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                doc = loaded
+            doc = load_openapi_doc(Path(openapi_path))
+            if ctx is not None and ctx.server_url:
+                doc = apply_server_url(doc, ctx.server_url)
         except (OSError, ValueError) as e:
             trace.error(f"ensure_workflow_on_disk: tool API unreadable: {type(e).__name__}: {e}")
         kind = "fallback"
@@ -786,6 +797,8 @@ def run_build(
     budget_s: float = TOTAL_BUDGET_S,
     stage_timeouts: dict[str, float] | None = None,
     bank: Any = None,
+    server_url: str | None = None,
+    folder_inputs: folder_input.FolderInputs | None = None,
 ) -> int:
     """Run every stage in STAGE_ORDER for one build. Returns the process exit code.
 
@@ -812,8 +825,12 @@ def run_build(
                 "layer order": " > ".join(str(b) for b in briefs),
                 "spec": str(spec_path) if spec_path is not None else "(extraction)",
                 "time budget": f"{budget_s:g} s",
+                "server url": server_url or "(contract servers[0].url)",
             },
         )
+        if folder_inputs is not None:
+            for line in folder_inputs.log:
+                trace.note(f"folder: {line}")
         ctx = BuildContext(
             root=root,
             briefs=list(briefs),
@@ -826,6 +843,8 @@ def run_build(
             spec_path=Path(spec_path) if spec_path is not None else None,
             client=client,
             bank=bank,
+            server_url=server_url,
+            extras=list(folder_inputs.extras) if folder_inputs is not None else [],
             deadline=time.monotonic() + budget_s,
         )
         overrides: dict[str, StageFn] = {"extract_spec": stage_spec_file} if spec_path is not None else {}
