@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import json
+import os
 import re
 import threading
 import time
@@ -19,10 +20,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from builder import health, online_cases, online_repair, online_runner, readback, selfcheck
+from builder import folder_input, health, online_cases, online_repair, online_runner, readback, selfcheck
 from builder.compiler import compile_fallback, compile_workflow, emergency_workflow
 from builder.extract import stage_extract
 from builder.freya_extra import get_workflow
+from builder.inputs import apply_server_url, load_openapi_doc
 from builder.lint import lint
 from builder.spec import load_spec, spec_to_dict, validate_spec
 from builder.trace import Trace
@@ -120,6 +122,8 @@ class BuildContext:
     deadline: float | None = None  # time.monotonic() value at which the total budget ends
     extract_budget_s: float | None = None
     bank: Any = None  # bank mock adapter for the online test (tests inject a fake)
+    server_url: str | None = None  # overrides servers[0].url of the tool API document
+    extras: list[Path] = field(default_factory=list)  # folder material appended after the briefs
 
 
 class StageSkipped(Exception):
@@ -136,9 +140,17 @@ class NotImplementedStage(StageSkipped):
 def stage_load_inputs(ctx: BuildContext) -> str:
     """Read every brief (in the given layer order) and parse the tool API document."""
     ctx.brief_texts = [Path(b).read_text(encoding="utf-8") for b in ctx.briefs]
-    doc = json.loads(Path(ctx.openapi_path).read_text(encoding="utf-8"))
-    if not isinstance(doc, dict):
-        raise ValueError("openapi document is not a JSON object")
+    for extra_path in ctx.extras:
+        text = folder_input.extra_text(Path(extra_path))
+        if text is None:
+            ctx.trace.note(f"extra material unreadable, left out: {extra_path}")
+            continue
+        ctx.briefs.append(Path(extra_path))
+        ctx.brief_texts.append(text)
+    doc = load_openapi_doc(Path(ctx.openapi_path))
+    if ctx.server_url:
+        doc = apply_server_url(doc, ctx.server_url)
+        ctx.trace.note(f"server_url override: {ctx.server_url}")
     ctx.openapi_doc = doc
     paths = doc.get("paths")
     tools = [str(k).strip("/") for k in paths] if isinstance(paths, dict) else []
@@ -398,7 +410,8 @@ def stage_save(ctx: BuildContext) -> str:
     )
     ctx.results["saved"] = info
     ctx.trace.log_artifact(
-        "saved", str(info["workflow_id"]), str(info.get("agent_id")), version=info.get("version")
+        "saved", str(info["workflow_id"]), str(info.get("agent_id")), version=info.get("version"),
+        note=f"slot={ctx.slot}",
     )
     return f"workflow_id={info['workflow_id']}"
 
@@ -440,6 +453,10 @@ def stage_export(ctx: BuildContext) -> str:
     info = _saved(ctx)
     path = _freya(ctx).export_workflow(
         str(info["workflow_id"]), str(ctx.run_dir / f"{ctx.slot}.workflow.json")
+    )
+    ctx.trace.log_artifact(
+        "exported", str(info["workflow_id"]), str(info.get("agent_id")), version=info.get("version"),
+        note=f"slot={ctx.slot} path={path}",
     )
     return f"exported to {path}"
 
@@ -490,11 +507,23 @@ def stage_online_test(ctx: BuildContext) -> str:
     if not carriers:
         _degrade(ctx, "online_test skipped: no carrier accounts (give --cases or put public-test-set.json in the project root)")
         raise StageSkipped("no carrier accounts")
-    scoring = online_runner.load_scoring(require_key=ctx.bank is None)
+    use_mock = ctx.bank is None and bool(ctx.server_url)
+    scoring = online_runner.load_scoring(require_key=ctx.bank is None and not use_mock)
     if scoring is None:
         _degrade(ctx, "online_test skipped: scoring tools or FREYA_BANK_TEAM_KEY missing")
         raise StageSkipped("no scoring tools or bank key")
-    bank = ctx.bank if ctx.bank is not None else online_runner.HttpBank(scoring)
+    if ctx.bank is not None:
+        bank = ctx.bank
+    elif use_mock:
+        try:
+            bank = online_runner.MockBank(online_runner.MockLedgerSource(
+                str(ctx.server_url), os.environ.get("BUILDER_MOCK_AUTH_HEADER"), os.environ.get("BUILDER_MOCK_AUTH_VALUE")))
+        except ValueError as e:
+            _degrade(ctx, f"online_test skipped: {e}")
+            raise StageSkipped("bad server url") from e
+        ctx.trace.note(f"online_test bank: mock at {online_runner.server_origin(str(ctx.server_url))}")
+    else:
+        bank = online_runner.HttpBank(scoring)
     spec = spec_to_dict(ctx.spec_obj) if ctx.spec_obj is not None else ctx.spec
     cases, skipped = online_cases.generate_cases(spec, carriers)
     coverage = online_cases.coverage_report(spec, cases, skipped)
@@ -538,7 +567,12 @@ def stage_online_test(ctx: BuildContext) -> str:
         ctx.workflow = out.live_workflow
         _write_json(ctx.run_dir / "workflow.json", out.live_workflow)
         try:
-            _freya(ctx).export_workflow(str(info["workflow_id"]), str(ctx.run_dir / f"{ctx.slot}.workflow.json"))
+            exported = _freya(ctx).export_workflow(
+                str(info["workflow_id"]), str(ctx.run_dir / f"{ctx.slot}.workflow.json"))
+            sv = ctx.results.get("saved") or {}
+            ctx.trace.log_artifact(
+                "exported", str(info["workflow_id"]), str(info.get("agent_id")), version=sv.get("version"),
+                note=f"slot={ctx.slot} path={exported}")
         except Exception as e:  # noqa: BLE001 - the saved agent is what counts; the export is a copy
             ctx.trace.warn(f"online_test: re-export failed: {type(e).__name__}: {e}")
     scored = [r for i, r in out.results.items() if not r.infra and not (i in out.classes and out.classes[i].klass == "expectation")]
@@ -555,6 +589,11 @@ def stage_online_test(ctx: BuildContext) -> str:
         "seconds": round(time.monotonic() - t0, 1), "stage_budget_s": STAGE_BUDGETS["online_test"],
     }
     _write_json(ctx.run_dir / "online_test.json", report)
+    for cid, r in out.results.items():
+        ctx.trace.log_test(
+            "online_case", ctx.slot,
+            f"case {cid} kind {r.kind} ledger={r.ledger_pass} conversation={r.conversation_pass} "
+            f"repairs={len(out.repairs)}")
     ctx.trace.log_test("online", ctx.slot, f"{out.decision.get('kept')} workflow live", passed, len(scored),
                        details=f"{len(out.repairs)} repair(s) tried, {report['excluded']} case(s) excluded")
     return (f"{passed}/{len(scored)} cases pass, {len(out.repairs)} repair(s) tried, kept {out.decision.get('kept')}, "
@@ -735,9 +774,9 @@ def ensure_workflow_on_disk(
         sources = _read_sources([Path(b) for b in briefs], texts)
         doc: dict[str, Any] = {}
         try:
-            loaded = json.loads(Path(openapi_path).read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                doc = loaded
+            doc = load_openapi_doc(Path(openapi_path))
+            if ctx is not None and ctx.server_url:
+                doc = apply_server_url(doc, ctx.server_url)
         except (OSError, ValueError) as e:
             trace.error(f"ensure_workflow_on_disk: tool API unreadable: {type(e).__name__}: {e}")
         kind = "fallback"
@@ -786,6 +825,8 @@ def run_build(
     budget_s: float = TOTAL_BUDGET_S,
     stage_timeouts: dict[str, float] | None = None,
     bank: Any = None,
+    server_url: str | None = None,
+    folder_inputs: folder_input.FolderInputs | None = None,
 ) -> int:
     """Run every stage in STAGE_ORDER for one build. Returns the process exit code.
 
@@ -812,8 +853,12 @@ def run_build(
                 "layer order": " > ".join(str(b) for b in briefs),
                 "spec": str(spec_path) if spec_path is not None else "(extraction)",
                 "time budget": f"{budget_s:g} s",
+                "server url": server_url or "(contract servers[0].url)",
             },
         )
+        if folder_inputs is not None:
+            for line in folder_inputs.log:
+                trace.note(f"folder: {line}")
         ctx = BuildContext(
             root=root,
             briefs=list(briefs),
@@ -826,6 +871,8 @@ def run_build(
             spec_path=Path(spec_path) if spec_path is not None else None,
             client=client,
             bank=bank,
+            server_url=server_url,
+            extras=list(folder_inputs.extras) if folder_inputs is not None else [],
             deadline=time.monotonic() + budget_s,
         )
         overrides: dict[str, StageFn] = {"extract_spec": stage_spec_file} if spec_path is not None else {}

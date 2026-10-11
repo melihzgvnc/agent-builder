@@ -79,6 +79,13 @@ The same phone agent can pass a customer in one run and fail it in the next. Tre
 
 So build something that reads a brief, not something that knows this one. Whatever your builder can take from the brief, it should take from the brief.
 
+## Final event workflow
+
+1. Mock bank: `uv run python mock/gen_mock.py --contract <contract.json> --customers <customers.json> --out mock/dist`, then deploy it as described in `mock/DEPLOY.md`. The mock is generated from the contract and the test customers; nothing is deployed by the builder.
+2. Build from the downloaded folder: `uv run python build.py --folder DIR --server-url https://<name>.<subdomain>.workers.dev/v1`. Briefs, contract and customers are found by content; `--server-url` (or `BUILDER_SERVER_URL`) replaces `servers[0].url` of the contract, so the agent's tools call your mock.
+3. Trace: each run writes `runs/<slot>-<time>/trace.log` (start and end in UTC and local time, model calls, Freya artifacts, tests, the exported file, a `RUN SUMMARY` block and the full console output under `CONSOLE`) and `trace.jsonl`. `FREYA_API_KEY`, `FREYA_BANK_TEAM_KEY`, `ANTHROPIC_API_KEY` and `BUILDER_MOCK_AUTH_VALUE` are masked in both files.
+4. Bundle one run: `uv run python scripts/make_submission.py runs/<run folder>` writes `submission/<run folder>/` with the exported `<slot>.workflow.json`, `trace.log`, `trace.jsonl`, `compile_report.json`, `spec.json` and a `MANIFEST.md` with sha256 per file. If the run has no export, the script exports it when `FREYA_API_KEY` is set. It runs no git command. `*.workflow.json` is gitignored, so commit it with `git add -f`.
+
 ## Rules
 
 - Your builder takes brief files as input and creates the phone agent with no manual step. Do not edit a phone agent by hand after it is created.

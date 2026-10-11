@@ -1,0 +1,21 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Pluggable LedgerSource (organizer vs mock) and customers-file carriers for online_test (plan item 3). Depends on FEAT-002.",
+  "status": "completed",
+  "steps": [
+    "Follow plan item 3 in /Users/melih/Desktop/build-the-builder/.worktrees/final-prep/.agents/tasks/final-prep-plan.md: edit builder/online_runner.py, builder/online_cases.py, builder/pipeline.py; add tests/test_ledger_sources.py and cases in tests/test_pipeline_online.py (fakes only)."
+  ],
+  "acceptance_criteria": [
+    "MockLedgerSource selected automatically when server_url set",
+    "unreachable ledger degrades to infra results and keeps saved agent",
+    "folder customers file used as carriers",
+    "existing public-test-set behaviour unchanged"
+  ],
+  "verification": [
+    "cd /Users/melih/Desktop/build-the-builder/.worktrees/final-prep && uv run pytest -q tests/test_online_runner.py tests/test_online_cases.py tests/test_online_repair.py tests/test_pipeline_online.py tests/test_ledger_sources.py",
+    "cd /Users/melih/Desktop/build-the-builder/.worktrees/final-prep && uv run python scripts/check_contamination.py"
+  ],
+  "blocked_reason": null,
+  "findings": "online_runner: LedgerSource protocol, OrganizerLedgerSource, MockLedgerSource (urllib, 20s timeout, origin = scheme+host so /v1 is stripped, optional auth header), MockBank, server_origin; HttpBank delegates ledger() to a source (behaviour unchanged). pipeline.stage_online_test: server_url set and no injected bank -> MockBank, load_scoring(require_key=False), auth from BUILDER_MOCK_AUTH_HEADER/VALUE (never logged), trace note; bad url degrades+skips. Unreachable ledger/session raises -> existing infra CaseResult path, run ends with workflow.json and saved agent kept (verified by test). online_cases.load_carriers accepts customer_id, missing variables, product ids p1..pN only when the file has no expected rows (public-test-set unchanged). Folder customers file already flows via ctx.cases (FEAT-002); no extra ctx.customers_path added. Tests: tests/test_ledger_sources.py, 4 new cases in tests/test_pipeline_online.py. Full suite 871 passed; check_contamination exit 0."
+}

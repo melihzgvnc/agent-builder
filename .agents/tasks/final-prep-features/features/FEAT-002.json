@@ -1,0 +1,21 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "--server-url / BUILDER_SERVER_URL override and --folder ingestion (plan item 2, 3 of the plan file).",
+  "status": "completed",
+  "steps": [
+    "Follow plan item 2 in /Users/melih/Desktop/build-the-builder/.worktrees/final-prep/.agents/tasks/final-prep-plan.md: builder/inputs.py, builder/folder_input.py (os.scandir only; no glob( or iterdir( substrings), pipeline/build.py/tools_gen/trace.note plumbing, tests."
+  ],
+  "acceptance_criteria": [
+    "every generated tool url starts with the override when set",
+    "no servers and no override fails with clear message only at tool compile",
+    "folder with renamed files classified by content; corrupt files skipped",
+    "build.py --folder TMP --dry --server-url https://example.invalid --spec <fixture> exits 0 in test"
+  ],
+  "verification": [
+    "cd /Users/melih/Desktop/build-the-builder/.worktrees/final-prep && uv run pytest -q tests/test_inputs.py tests/test_folder_input.py tests/test_build_folder_cli.py tests/test_tools_gen.py tests/test_build_cli.py tests/test_contamination.py",
+    "cd /Users/melih/Desktop/build-the-builder/.worktrees/final-prep && uv run python scripts/check_contamination.py"
+  ],
+  "blocked_reason": null,
+  "findings": "Added builder/inputs.py (apply_server_url, resolve_server_url, load_openapi_doc), builder/folder_input.py (os.walk discovery by content, BRIEF.md first, README/.txt as extras, corrupt/binary skipped, pdf via pdftotext only), Trace.note, pipeline plumbing (server_url, folder_inputs, extras appended after briefs with '# EXTRA MATERIAL' header, truncated to 20k chars; override also applied in fallback workflow), clearer tools_gen message, build.py --folder/--server-url (single dir positional = folder; folder contract/customers used unless --openapi/--cases given; loud warning when folder has no contract). Tests: tests/test_inputs.py, test_folder_input.py, test_build_folder_cli.py (subprocess, cleans its run dir). Full suite 859 passed; check_contamination exit 0. Notes: YAML only if yaml importable (not installed); docx unsupported (logged skipped)."
+}

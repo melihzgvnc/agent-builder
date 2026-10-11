@@ -158,3 +158,13 @@ def test_variant_files_are_refused(tree: Tree) -> None:
 def test_real_repo_is_clean(capsys: pytest.CaptureFixture[str]) -> None:
     code = cc.main([])
     assert code == 0, capsys.readouterr().out
+
+
+def test_default_roots_cover_mock_and_skip_generated_dirs(tmp_path: Path) -> None:
+    assert REPO_ROOT / "mock" in cc.DEFAULT_ROOTS
+    assert {"dist", "node_modules"} <= cc.SKIP_DIR_NAMES
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "x.js").write_text("x", encoding="utf-8")
+    (tmp_path / "y.js").write_text("y", encoding="utf-8")
+    found = [p.name for p, _ in cc._iter_files([tmp_path], set(), False)]
+    assert found == ["y.js"]

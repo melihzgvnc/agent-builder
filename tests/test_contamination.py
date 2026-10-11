@@ -1,4 +1,4 @@
-"""Guard: no value from the known briefs may appear in builder code (builder/ and build.py)."""
+"""Guard: no value from the known briefs may appear in builder code (builder/, build.py and mock/)."""
 
 from __future__ import annotations
 
@@ -54,6 +54,10 @@ def _builder_files() -> list[Path]:
     files = [REPO_ROOT / "build.py"]
     for p in sorted((REPO_ROOT / "builder").rglob("*")):
         if p.is_file() and "__pycache__" not in p.parts:
+            files.append(p)
+    skip = {"__pycache__", "dist", "node_modules", ".wrangler"}
+    for p in sorted((REPO_ROOT / "mock").rglob("*")):
+        if p.is_file() and not skip & set(p.relative_to(REPO_ROOT / "mock").parts):
             files.append(p)
     return files
 

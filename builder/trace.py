@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from builder import __version__
+from builder.tee import captured_text, redact
 
 REQUIRED_SECTIONS: tuple[str, ...] = (
     "START",
@@ -26,6 +28,8 @@ REQUIRED_SECTIONS: tuple[str, ...] = (
     "WARNINGS",
     "ERRORS",
     "END",
+    "RUN SUMMARY",
+    "CONSOLE",
 )
 
 SOURCE_SUFFIXES: frozenset[str] = frozenset({".py", ".json", ".md", ".txt", ".tmpl", ".jinja"})
@@ -33,6 +37,43 @@ SOURCE_SUFFIXES: frozenset[str] = frozenset({".py", ".json", ".md", ".txt", ".tm
 
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def _stamp(local: str) -> str:
+    """'<utc>Z | local <iso with offset>' for a local ISO timestamp."""
+    utc = datetime.fromisoformat(local).astimezone(timezone.utc).replace(tzinfo=None)
+    return f"{utc.isoformat(timespec='seconds')}Z | local {local}"
+
+
+def find_export(run_dir: Path) -> Path | None:
+    """The first <slot>.workflow.json in a run folder, else None."""
+    try:
+        with os.scandir(run_dir) as it:
+            names = sorted(e.name for e in it if e.is_file() and e.name.endswith(".workflow.json"))
+    except OSError:
+        return None
+    return Path(run_dir) / names[0] if names else None
+
+
+def format_run_summary(
+    run_dir: Path, elapsed_s: float, exit_code: int, result: str, export_path: Path | None = None
+) -> list[str]:
+    """The RUN SUMMARY lines: output paths, elapsed seconds, exit code and result."""
+    run_dir = Path(run_dir)
+    export = export_path if export_path is not None else find_export(run_dir)
+    return [
+        f"workflow.json: {run_dir / 'workflow.json'}",
+        f"export: {export if export is not None else '(not exported)'}",
+        f"trace.log: {run_dir / 'trace.log'}",
+        f"trace.jsonl: {run_dir / 'trace.jsonl'}",
+        f"elapsed: {elapsed_s:.1f}s",
+        f"exit_code: {exit_code}",
+        f"result: {result}",
+    ]
 
 
 def sha256_file(path: Path) -> str:
@@ -110,6 +151,7 @@ class Trace:
         self.start_time: str = _now()
         self._t0: float = time.monotonic()
         self.inputs: list[str] = []
+        self.notes: list[str] = []
         self.stages: list[str] = []
         self.model_calls: list[str] = []
         self.artifacts: list[str] = []
@@ -134,13 +176,13 @@ class Trace:
             source_sha256_start=self.source_sha256_start,
         )
         self.log_path.write_text(
-            f"== START ==\nstart: {self.start_time}\nrun in progress\n", encoding="utf-8"
+            f"== START ==\nstart: {_stamp(self.start_time)}\nrun in progress\n", encoding="utf-8"
         )
 
     def _event(self, kind: str, **data: object) -> None:
         record: dict[str, object] = {"ts": _now(), "kind": kind, **data}
         with open(self.jsonl_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+            f.write(redact(json.dumps(record, default=str)) + "\n")
             f.flush()
 
     def set_inputs(
@@ -186,6 +228,11 @@ class Trace:
             slot=slot,
             flags=flags,
         )
+
+    def note(self, msg: str) -> None:
+        """Record an informational line in the INPUTS section (and as a note event)."""
+        self.notes.append(msg)
+        self._event("note", message=msg)
 
     def log_stage(self, name: str, status: str, detail: str, duration_s: float) -> None:
         """Record one pipeline stage result (status: ok, skipped or failed)."""
@@ -319,8 +366,8 @@ class Trace:
 
     def _write_log(self) -> None:
         sections: dict[str, list[str]] = {
-            "START": [f"start: {self.start_time}"],
-            "INPUTS": self.inputs,
+            "START": [f"start: {self.start_time}", f"start (utc | local): {_stamp(self.start_time)}"],
+            "INPUTS": [*self.inputs, *(f"note: {n}" for n in self.notes)],
             "BUILDER VERSION": [
                 f"version: {__version__}",
                 f"git_commit: {self.git_commit}",
@@ -336,10 +383,15 @@ class Trace:
             "ERRORS": self.errors,
             "END": [
                 f"end: {self.end_time or '-'}",
+                f"end (utc | local): {_stamp(self.end_time) if self.end_time else '-'}",
                 f"duration: {_fmt_num(self.duration_s, 2)}s",
                 f"exit_code: {_fmt_num(self.exit_code)}",
                 f"result: {self.result or '-'}",
             ],
+            "RUN SUMMARY": format_run_summary(
+                self.run_dir, self.duration_s or 0.0, self.exit_code or 0, self.result or "-"
+            ),
+            "CONSOLE": captured_text().splitlines(),
         }
         out: list[str] = []
         for name in REQUIRED_SECTIONS:
@@ -347,4 +399,4 @@ class Trace:
             body = sections[name]
             out.extend(body if body else ["(none)"])
             out.append("")
-        self.log_path.write_text("\n".join(out), encoding="utf-8")
+        self.log_path.write_text(redact("\n".join(out)), encoding="utf-8")

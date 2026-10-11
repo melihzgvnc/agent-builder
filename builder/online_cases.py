@@ -79,16 +79,21 @@ def load_carriers(path: Any) -> list[Carrier]:
         return []
     carriers: list[Carrier] = []
     for e in data:
-        if not isinstance(e, dict) or not isinstance(e.get("id"), str):
+        if not isinstance(e, dict):
+            continue
+        cid = next((e[k] for k in ("id", "customer_id") if isinstance(e.get(k), str) and e[k]), None)
+        if cid is None:
             continue
         variables, identity, products = e.get("variables"), e.get("identity"), e.get("products")
+        if variables is None:
+            variables = {}  # simpler customer files carry no call variables; such a carrier is picked only if usable
         if not isinstance(variables, dict) or not isinstance(identity, dict):
             continue
         if not isinstance(products, list) or not products or not all(isinstance(p, dict) for p in products):
             continue
         faults = e.get("faults")
         carriers.append(Carrier(
-            e["id"], dict(variables), dict(identity), [dict(p) for p in products],
+            cid, dict(variables), dict(identity), [dict(p) for p in products],
             [f for f in faults if isinstance(f, dict)] if isinstance(faults, list) else [],
         ))
     ids: set[str] = set()
@@ -104,6 +109,8 @@ def load_carriers(path: Any) -> list[Carrier]:
     for c in carriers:
         if len(known) >= len(c.products):
             c.product_ids = known[: len(c.products)]
+        elif not known:
+            c.product_ids = [f"p{i + 1}" for i in range(len(c.products))]  # no expected rows: ids by position
     return carriers
 
 

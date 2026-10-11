@@ -13,6 +13,9 @@ import os
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -89,11 +92,66 @@ class Bank(Protocol):
     def ledger(self, customer_id: str) -> dict[str, Any]: ...
 
 
-class HttpBank:
-    """The bank mock over the kit's own http helper."""
+class LedgerSource(Protocol):
+    def ledger(self, customer_id: str) -> dict[str, Any]: ...
+
+
+class OrganizerLedgerSource:
+    """The organisers' bank, read through the kit's own http helper."""
 
     def __init__(self, scoring: Any) -> None:
         self._http = scoring.http
+
+    def ledger(self, customer_id: str) -> dict[str, Any]:
+        resp = self._http("/v1/practice/ledger/" + str(customer_id))
+        return resp if isinstance(resp, dict) else {}
+
+
+def server_origin(server_url: str) -> str:
+    """scheme://host[:port] of a server url; any path such as /v1 is dropped."""
+    parts = urllib.parse.urlsplit(server_url.strip())
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise ValueError(f"not an http(s) url: {server_url!r}")
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+class MockLedgerSource:
+    """A self-hosted bank mock: GET <origin>/v1/practice/ledger/<id>. Raises on any network or 5xx error."""
+
+    def __init__(self, server_url: str, auth_header: str | None = None, auth_value: str | None = None,
+                 opener: Callable[..., Any] | None = None, timeout: float = 20.0) -> None:
+        self.origin = server_origin(server_url)
+        self.auth = (auth_header, auth_value) if auth_header and auth_value else None
+        self._opener = opener
+        self.timeout = timeout
+
+    def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        headers = {"Content-Type": "application/json"} if data is not None else {}
+        if self.auth:
+            headers[self.auth[0]] = self.auth[1]
+        req = urllib.request.Request(self.origin + path, data=data, headers=headers, method=method)
+        opener = self._opener or urllib.request.urlopen
+        with opener(req, timeout=self.timeout) as resp:
+            status = getattr(resp, "status", 200)
+            if status >= 400:
+                raise RuntimeError(f"{method} {path}: HTTP {status}")
+            return json.loads(resp.read().decode("utf-8"))
+
+    def ledger(self, customer_id: str) -> dict[str, Any]:
+        resp = self._call("GET", "/v1/practice/ledger/" + urllib.parse.quote(str(customer_id), safe=""))
+        return resp if isinstance(resp, dict) else {}
+
+    def session(self, case_id: str) -> Any:
+        return self._call("POST", "/v1/practice/sessions", {"case": case_id})
+
+
+class HttpBank:
+    """The organisers' bank over the kit's own http helper (ledger reads go through a LedgerSource)."""
+
+    def __init__(self, scoring: Any, source: LedgerSource | None = None) -> None:
+        self._http = scoring.http
+        self._source: LedgerSource = source if source is not None else OrganizerLedgerSource(scoring)
 
     def session(self, case_id: str) -> dict[str, Any]:
         resp = self._http("/v1/practice/sessions", {"case": case_id})
@@ -103,8 +161,24 @@ class HttpBank:
         return variables
 
     def ledger(self, customer_id: str) -> dict[str, Any]:
-        resp = self._http("/v1/practice/ledger/" + str(customer_id))
-        return resp if isinstance(resp, dict) else {}
+        return self._source.ledger(customer_id)
+
+
+class MockBank:
+    """Session and ledger of a self-hosted mock (selected when a server url override is set)."""
+
+    def __init__(self, source: MockLedgerSource) -> None:
+        self._source = source
+
+    def session(self, case_id: str) -> dict[str, Any]:
+        resp = self._source.session(case_id)
+        variables = resp.get("variables") if isinstance(resp, dict) else None
+        if not isinstance(variables, dict) or not variables.get("customer_id"):
+            raise RuntimeError(f"no session for case {case_id}: {str(resp)[:200]}")
+        return variables
+
+    def ledger(self, customer_id: str) -> dict[str, Any]:
+        return self._source.ledger(customer_id)
 
 
 @dataclass

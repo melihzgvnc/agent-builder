@@ -55,7 +55,7 @@ def make_world(root: Path) -> World:
 def build(root: Path, client: Any, bank: Any = None, dry: bool = False, **kw: Any) -> tuple[int, Path]:
     dirs: list[Path] = []
     code = run_build(root=root, briefs=[REPO_ROOT / "briefs" / "brief-a.md"], openapi=REPO_ROOT / "tools" / "openapi.json",
-                     slot="slot-a", dry=dry, cases=None, runs_dir=root / "runs", on_run_dir=dirs.append,
+                     slot="slot-a", dry=dry, cases=kw.pop("cases", None), runs_dir=root / "runs", on_run_dir=dirs.append,
                      spec_path=SPEC_FILE, client=client, bank=bank, **kw)
     return code, dirs[0]
 
@@ -183,3 +183,65 @@ def test_spec_repair_gate_rejects_lint_errors_and_accepts_clean_rebuilds(monkeyp
     assert gate(spec) is None
     monkeypatch.undo()
     assert gate({"not": "a spec"}) is None
+
+
+def _mock_setup(monkeypatch: pytest.MonkeyPatch, world: World, **fake_kw: Any) -> list[Any]:
+    """Replace the mock bank with a FakeBank so no network is used; records the constructed sources."""
+    made: list[Any] = []
+
+    class Spy(FakeBank):
+        def __init__(self, source: Any) -> None:
+            super().__init__(world, **fake_kw)
+            made.append(source)
+
+    monkeypatch.setattr(pipeline.online_runner, "MockBank", Spy)
+    return made
+
+
+def test_server_url_selects_the_mock_bank_without_a_team_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FREYA_BANK_TEAM_KEY", raising=False)
+    world = make_world(tmp_path)
+    made = _mock_setup(monkeypatch, world)
+    code, run_dir = build(tmp_path, StageFreya(world), server_url="https://mock.example/v1")
+    assert code == 0 and "online_test: ok" in trace(run_dir)
+    assert len(made) == 1 and made[0].origin == "https://mock.example"
+
+
+def test_no_server_url_keeps_the_organizer_bank(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FREYA_BANK_TEAM_KEY", raising=False)
+    world = make_world(tmp_path)
+    made = _mock_setup(monkeypatch, world)
+    code, run_dir = build(tmp_path, StageFreya(world))
+    assert code == 0 and not made and "scoring tools or FREYA_BANK_TEAM_KEY missing" in trace(run_dir)
+
+
+def test_unreachable_ledger_degrades_to_infra_and_keeps_the_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.error
+
+    def down(*a: Any, **kw: Any) -> Any:
+        raise urllib.error.URLError("unreachable")
+
+    monkeypatch.setattr("urllib.request.urlopen", down)
+    world = make_world(tmp_path)
+    client = StageFreya(world)
+    code, run_dir = build(tmp_path, client, server_url="https://mock.invalid/v1")
+    assert code == 0 and (run_dir / "workflow.json").is_file()
+    report = json.loads((run_dir / "online_test.json").read_text(encoding="utf-8"))
+    assert report["scored"] == 0 and report["excluded"] > 0 and report["decision"]["kept"] == "baseline"
+    assert client.calls.count("save") == 1 and "run_simulation" not in client.calls
+    assert "DEGRADED: online_test" in trace(run_dir)
+
+
+def test_folder_customers_file_supplies_the_carriers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data = json.loads((REPO_ROOT / "public-test-set.json").read_text(encoding="utf-8"))
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    renamed = [{**e, "id": "ZZ-" + e["id"]} for e in data]
+    (folder / "people.json").write_text(json.dumps(renamed), encoding="utf-8")
+    spec = spec_to_dict(load_spec(json.loads(SPEC_FILE.read_text(encoding="utf-8"))))
+    mine = World(generate_cases(spec, load_carriers(folder / "people.json"))[0])
+    code, run_dir = build(tmp_path, StageFreya(mine), FakeBank(mine), cases=folder / "people.json")
+    assert code == 0
+    report = json.loads((run_dir / "online_test.json").read_text(encoding="utf-8"))
+    assert report["carriers_file"].endswith("people.json")
+    assert report["cases"] and all(c["carrier"].startswith("ZZ-") for c in report["cases"])
