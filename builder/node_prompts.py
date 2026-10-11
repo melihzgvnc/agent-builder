@@ -111,6 +111,33 @@ def _quote(text: str) -> str:
     return '"' + text + '"'
 
 
+def customer_words(text: str | None) -> str:
+    """Words that can be spoken as they are. An instruction to the model ("Tell the customer to
+    ...", "Do not state ...") is rewritten into a plain request or dropped, never read aloud."""
+    if not text:
+        return ""
+    out: list[str] = []
+    for sent in re.split(r"(?<=[.!?])\s+", text.strip()):
+        s = sent.strip()
+        if not s:
+            continue
+        if re.match(r"(do not|don't|never|avoid|make sure not)\b", s, re.I):
+            continue
+        m = re.match(r"(tell|ask|say to|inform|advise|remind)\s+(the\s+)?(customer|caller|them|him|her)\s+to\s+(.+)", s, re.I)
+        if m:
+            out.append("Please " + m.group(4).strip())
+            continue
+        m = re.match(r"(tell|inform|say to)\s+(the\s+)?(customer|caller|them|him|her)\s+that\s+(.+)", s, re.I)
+        if m:
+            rest = m.group(4).strip()
+            out.append(rest[:1].upper() + rest[1:])
+            continue
+        if re.search(r"\b[a-z]+_[a-z_]+\b", s):
+            continue
+        out.append(s)
+    return " ".join(out)
+
+
 def _goodbye(spec: PolicySpec) -> str:
     g = spec.closing.goodbye_before_close
     return g.text if g is not None and g.text else ""
@@ -575,7 +602,7 @@ def _identity_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
     if fail is not None:
         text = "If the check fails"
         if fail.say:
-            text += " the call says " + _quote(_fill(fail.say, spec)) + " by itself"
+            text += " the call says " + _quote(_fill(customer_words(fail.say), spec)) + " by itself"
         if fail.disclose_debt is False:
             text += "; never mention the debt"
         lines.append(text + ".")
@@ -907,7 +934,7 @@ def _promise_lines(spec: PolicySpec, ctx: PromptCtx) -> list[str]:
     if pr.success_sentence and not ctx.auto_close:
         lines.append("After the promise is recorded, say: " + _quote(_fill(pr.success_sentence, spec)))
     if pr.on_failure is not None and pr.on_failure.say:
-        lines.append("If the promise cannot be recorded in the end, the call says " + _quote(_fill(pr.on_failure.say, spec)) + " by itself.")
+        lines.append("If the promise cannot be recorded in the end, the call says " + _quote(_fill(customer_words(pr.on_failure.say), spec)) + " by itself.")
     if pr.forbidden_offers:
         lines.append("Never offer: " + ", ".join(pr.forbidden_offers) + ".")
     return lines
@@ -983,9 +1010,22 @@ def negotiate_task(spec: PolicySpec, ctx: PromptCtx) -> str:
             "When every product is handled (a promise or a note) or the call is transferred, "
             + _close_with(spec, ctx, ctx.finalize_transition) + "."
         )
+    op = spec.opening
+    always_answer: list[str] = []
+    if op is not None and op.ai_question_answer:
+        always_answer.append(
+            "If the customer asks whether you are an AI or a robot, at any point and even inside a longer message, "
+            "first say: " + _quote(_fill(op.ai_question_answer, spec)) + " Then carry on with what they said."
+        )
+    if op is not None and op.scam_question_answer:
+        always_answer.append(
+            "If the customer asks whether this call is a scam, at any point and even inside a longer message, "
+            "first say: " + _quote(_fill(op.scam_question_answer, spec)) + " Then carry on with what they said."
+        )
     return _join(
         [
             intro,
+            "\n".join(always_answer),
             _section("Debt statement:", _debt_lines(spec)),
             facts,
             _section("Asking:", _ask_lines(spec, ctx)),

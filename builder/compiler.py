@@ -714,7 +714,14 @@ class _Build:
             if item.lower() not in low:
                 self.warn(f"opening.first_sentence.template does not contain the required item {item!r}")
 
+    def customer_words(self, text: str | None) -> str:
+        words = node_prompts.customer_words(text)
+        if text and words != text.strip():
+            self.warn("text read as an instruction; spoken as: " + (words or "(nothing)"))
+        return words
+
     def spoken(self, say: str | None) -> str | None:
+        say = self.customer_words(say)
         parts = [node_prompts.fill_call_slots(say, self.spec)] if say else []
         if self.farewell():
             parts.append(self.farewell())

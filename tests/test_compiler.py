@@ -766,3 +766,25 @@ def test_default_farewell_only_for_english_and_required() -> None:
     wf, report = compile_workflow(load_spec(data), copy.deepcopy(OPENAPI))
     assert wf["nodes"]["end_final"]["terminal"]["function"]["parameters"]["properties"]["message_mode"]["default"] == "none"
     assert any("end nodes are silent" in g for g in report.gaps)
+
+
+
+def _end_texts(wf: dict) -> list[str]:
+    return [str(n.get("spoken_message") or n.get("config", {}).get("spoken_message") or "") for n in wf["nodes"] if n.get("node_type") == "end_call"]
+
+
+def test_instruction_text_on_failure_is_never_spoken_aloud():
+    spec_d = copy.deepcopy(spec_dict("A"))
+    spec_d["identity"]["on_failure"]["say"] = "Do not state the debt. Tell the customer to use the mobile app or a branch."
+    wf, report = compile_dicts(spec_d)
+    blob = json.dumps(wf)
+    assert "Do not state" not in blob
+    assert "Tell the customer to use the mobile app" not in blob
+    assert "Please use the mobile app or a branch." in blob
+
+
+def test_negotiate_prompt_answers_ai_question_inside_longer_message():
+    wf, _ = compiled("A")
+    neg = wf["nodes"][compiler.NODE_NEGOTIATE]
+    text = json.dumps(neg)
+    assert "even inside a longer message" in text
