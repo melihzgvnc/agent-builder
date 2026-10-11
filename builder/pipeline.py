@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import json
+import os
 import re
 import threading
 import time
@@ -501,11 +502,23 @@ def stage_online_test(ctx: BuildContext) -> str:
     if not carriers:
         _degrade(ctx, "online_test skipped: no carrier accounts (give --cases or put public-test-set.json in the project root)")
         raise StageSkipped("no carrier accounts")
-    scoring = online_runner.load_scoring(require_key=ctx.bank is None)
+    use_mock = ctx.bank is None and bool(ctx.server_url)
+    scoring = online_runner.load_scoring(require_key=ctx.bank is None and not use_mock)
     if scoring is None:
         _degrade(ctx, "online_test skipped: scoring tools or FREYA_BANK_TEAM_KEY missing")
         raise StageSkipped("no scoring tools or bank key")
-    bank = ctx.bank if ctx.bank is not None else online_runner.HttpBank(scoring)
+    if ctx.bank is not None:
+        bank = ctx.bank
+    elif use_mock:
+        try:
+            bank = online_runner.MockBank(online_runner.MockLedgerSource(
+                str(ctx.server_url), os.environ.get("BUILDER_MOCK_AUTH_HEADER"), os.environ.get("BUILDER_MOCK_AUTH_VALUE")))
+        except ValueError as e:
+            _degrade(ctx, f"online_test skipped: {e}")
+            raise StageSkipped("bad server url") from e
+        ctx.trace.note(f"online_test bank: mock at {online_runner.server_origin(str(ctx.server_url))}")
+    else:
+        bank = online_runner.HttpBank(scoring)
     spec = spec_to_dict(ctx.spec_obj) if ctx.spec_obj is not None else ctx.spec
     cases, skipped = online_cases.generate_cases(spec, carriers)
     coverage = online_cases.coverage_report(spec, cases, skipped)
