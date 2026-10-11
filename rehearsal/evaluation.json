@@ -1,0 +1,423 @@
+{
+ "run_dir": "/Users/melih/Desktop/build-the-builder/runs/rehearsal-20261011-132458",
+ "workflow_id": "8ac9ad4e-a284-49d5-909d-f3e567064dab",
+ "agent_id": "c1e3a19b-5ac0-43b4-8fdd-33578a7b00cd",
+ "frozen_code_untouched": true,
+ "git_commits_made": 0,
+ "a_build_report": {
+  "real_workflow": true,
+  "fallback_workflow": false,
+  "fallback_reason": "",
+  "lint_errors": 0,
+  "lint_warnings": 0,
+  "compile_gaps": 0,
+  "compile_warnings": [
+   "closing.aggregation.default is missing: a verified call that ends with nothing recorded falls back to no_promise/refused"
+  ],
+  "selfcheck": {
+   "checks": 111,
+   "failed": 0,
+   "warnings": 0,
+   "repairs": 0
+  },
+  "extraction": {
+   "model": "anthropic/claude-sonnet-5.5",
+   "seconds": 104.4,
+   "repairs": 0,
+   "compile_repairs": 0,
+   "spec_warnings": 16,
+   "verbatim_rules": 26,
+   "mandated_sentences": 6,
+   "coverage_missing_tokens": 8
+  },
+  "stages": "12 of 12 ok, none over budget, total 289.5 s of 1500 s (run-record.json)",
+  "mandated_sentences_in_agent": "6 of 6 quoted sentences present in workflow.json",
+  "manual_action_needed_by_build": false,
+  "run_record_degraded": true,
+  "degraded_reason": "online_test hit 504s; 0/0 scored"
+ },
+ "a_spec_vs_brief": {
+  "mismatch_table": [
+   {
+    "n": 1,
+    "topic": "deadline rule, recent band (days_late 2 to 23)",
+    "brief": "due date (now minus days_late) + 24 calendar days (brief-1 rule 18, brief-2 table)",
+    "spec_and_agent": "spec bands[recent].deadline = calendar_days_after_today n=24; compiled code computes today + 24 and ignores days_late. Prose in the negotiate node states the correct rule, but the facts node feeds the model the wrong date.",
+    "evidence": "variable_table in every recent-band call: p1_deadline=2026-11-07 for 4, 5, 6, 12 and 20 days late (correct: 10-26 for 12 d, 11-02 for 5 d, 11-01 for 6 d, 10-18 for 20 d). Recorded dates in PROBE-04: 11-05, 10-20, 11-02, never 10-26. Extractor flagged the schema gap in extraction_notes but the compile did not fail or fall back.",
+    "severity": "high",
+    "type": "mismatch"
+   },
+   {
+    "n": 2,
+    "topic": "floors, credit card 12% and personal loan 45%",
+    "brief": "credit card 12% of past due, personal loan 45% of past due, car loan instalment_amount",
+    "spec_and_agent": "only car_loan -> instalment_amount is structured. facts say 'floor amount: unknown' for card and loan; persuasion attempts 2 and 3 show 'unknown'. The model computes percentages from prose (243.00, 21.60 offered correctly), but the create_promise pre-hook treats the floor as unknown and overwrites the amount with the FULL amount.",
+    "evidence": "PROBE-03 (personal loan 540.00, customer agreed 243.00): read-back said 243.00, create_promise body amount=540.0, ledger promise 540.0, 3 of 3 sim runs plus the orphan sim run. The agent then said the confirmation sentence without telling the customer the recorded value differed (the tool result's what_to_do_next asked it to).",
+    "severity": "high",
+    "type": "mismatch"
+   },
+   {
+    "n": 3,
+    "topic": "persuasion attempt 3 date",
+    "brief": "floor amount on the 3rd business day after today (= 2026-10-20 with holidays)",
+    "spec_and_agent": "date_rule next_business_day placeholder. facts: 'attempt 3 offer: unknown on 2026-10-15' (next business day).",
+    "evidence": "PROBE-08 facts and transcript: third offer was dated 2026-10-21 (the model improvised), neither 10-15 nor the correct 10-20.",
+    "severity": "medium",
+    "type": "mismatch"
+   },
+   {
+    "n": 4,
+    "topic": "callback window on Thursday",
+    "brief": "10:00-17:00 Sun-Wed, 10:00-14:00 Thursday",
+    "spec_and_agent": "single structured window hour_end 17:00; Thursday 14:00 exists only in verbatim prose. Same node also contradicts itself: 'ask for another time, at most once' next to 'You may ask twice'.",
+    "evidence": "PROBE-07: in 3 of 3 sim runs the agent rejected Thursday 15:30 from the prose and booked 11:00, so behaviour was right, but only because of the LLM; a structural check would pass 15:30.",
+    "severity": "low",
+    "type": "mismatch (structural, behaviour OK in probes)"
+   },
+   {
+    "n": 5,
+    "topic": "first sentence of the call",
+    "brief": "rule 1: first sentence says Nora, digital assistant of Cedar Ridge Bank, call is recorded",
+    "spec_and_agent": "spec opening.first_sentence.must_include is correct, but the identity node says the confirmation question 'has already been asked' and speaks 'Is this {title} {last_name}?' first; the Nora/recorded sentence follows in the second agent turn.",
+    "evidence": "30 of 30 sim transcripts begin with 'Is this Mr/Ms X?'. (Through the chat route the intro came first, so this depends on the entry path; the simulation path is the one scored.)",
+    "severity": "medium",
+    "type": "mismatch"
+   },
+   {
+    "n": 6,
+    "topic": "thank the customer and say goodbye before close_call",
+    "brief": "rule 46",
+    "spec_and_agent": "spec closing.goodbye_before_close.required=true. Compiled end_call messages are 'Please visit a Cedar Ridge branch.' (identity failure) and 'Goodbye.' (callback); no thanks. One happy-path call (run1 PROBE-01) ended with no confirmation sentence and no goodbye at all.",
+    "evidence": "PROBE-05 and PROBE-06 (3/3 each): no goodbye. PROBE-07 (3/3): 'Goodbye.' without thanks. run1 PROBE-01: nothing said after create_promise.",
+    "severity": "medium",
+    "type": "mismatch"
+   },
+   {
+    "n": 7,
+    "topic": "promise date recorded vs read back",
+    "brief": "rules 33-35: read back, record only what was confirmed",
+    "spec_and_agent": "pre-hook clamps date/amount of create_promise to its own facts (wrong deadline, unknown floor) without the agent being forced to tell the customer.",
+    "evidence": "PROBE-04 run1: read-back 2026-11-07, recorded 2026-11-05; PROBE-03 amount 243 -> 540; PROBE-09 loan 10-18 expected, recorded 10-20.",
+    "severity": "high",
+    "type": "mismatch"
+   },
+   {
+    "n": 8,
+    "topic": "one date for all, per-product deadline",
+    "brief": "brief-2: product past its own deadline is recorded on its own deadline and read-back says so",
+    "spec_and_agent": "spec multi_product.one_date_for_all = cap_each_to_own_deadline (correct) but deadlines come from mismatch 1.",
+    "evidence": "PROBE-09 (3/3): both products recorded 2026-10-20; personal loan (20 days late) should be 2026-10-18; read-back never mentioned a capped date. Online-test generator skipped its multi-product and date-clamping cases for related reasons (see online_test).",
+    "severity": "high (consequence of 1)",
+    "type": "mismatch"
+   },
+   {
+    "n": 9,
+    "topic": "business-day calendar as used by the model",
+    "brief": "Sunday to Thursday are business days",
+    "spec_and_agent": "spec calendar is right (weekend friday, saturday; facts list Sundays as business days) but the model contradicts its own facts.",
+    "evidence": "Agent said a Sunday is not a business day in 6 of 6 calls where the customer proposed a Sunday (PROBE-02 x3, PROBE-04 x3). In PROBE-02 the final result still came out right by luck; in PROBE-04 it moved dates.",
+    "severity": "medium",
+    "type": "behaviour, not spec"
+   },
+   {
+    "n": 10,
+    "topic": "hardship offer",
+    "brief": "brief-2: sympathy, note hardship, carry on; support transfer only when a clearly struggling customer says yes to a support colleague",
+    "spec_and_agent": "spec adds an active offer 'Would you like to speak to a support colleague?' on every hardship mention and keeps brief-1's 'death in the family' trigger.",
+    "evidence": "spec intents[hardship] (not probed). Interpretation of an under-specified paragraph, not stated by the briefs.",
+    "severity": "low",
+    "type": "invention / interpretation"
+   }
+  ],
+  "mismatch_count": 10,
+  "counts_by_type": {
+   "mismatch": 8,
+   "behaviour_not_spec": 1,
+   "invention_or_interpretation": 1
+  },
+  "high_severity": [
+   1,
+   2,
+   7,
+   8
+  ],
+  "matches": [
+   "bands: recent 2-23 with 3 attempts, aged 24-75 with 1 attempt; aged deadline = 4th business day (10-21 in PROBE-02, correct, 3/3)",
+   "calendar: week starts Sunday, weekend Fri/Sat, holidays 2026-10-19, 2026-10-29, 2026-11-19, 'next/this <weekday>' semantics",
+   "identity: phone first then DOB, YYYY-MM-DD, day-month-year reading, day_month_swapped hint, max_wrong_total 2 (spec overrode the mock's 3), decline after 2 refusals with the explanation once. Probes PROBE-05/06: ended after exactly 2 wrong answers in 3/3 runs (incl. wrong, right, wrong).",
+   "wrong-answer limit 2, persuasion limits 3/1, callback window Sun-Wed 10:00-17:00 and 'today or next business day, later than now'",
+   "outcome table and aggregation: promise / paid / no_promise with first non-paid reason / transferred queue; service_error note on a failed promise; all 6 outcomes and every reason from the briefs present",
+   "6 of 6 sentences the briefs quote word for word are in the compiled agent: 'Is this {title} {last_name}?', 'Please accept our condolences.', 'Could you settle this today?', 'Shall I record this?', 'A confirmation message will reach you by text.', 'Confirmation messages will reach you by text.' (grep of workflow.json). Singular and plural confirmation sentences were used correctly in the probes where a promise was recorded.",
+   "debt statement: one sentence per product, product names 'credit card ending ####' / 'personal loan' / 'car loan'; forbidden words never used before verification in 30 of 30 transcripts",
+   "mandated-sentence count in spec.mandated_sentences: 6; verbatim_rules: 26; extraction coverage: 8 tokens missing, all identifiers of the example call (11:00, c_91ab, Lena, Okafor, 2026-10-14, 2026-10-18, 'credit card ending 1234', 'Thursday for all of it'), harmless",
+   "no add_note before or after a transfer, recorded promises stay, unrecorded dropped (spec multi_product.on_transfer); not probed"
+  ],
+  "caveat": "A static scan of the spec was not enough: the compiled engine/hook code was read and the facts the model sees were taken from variable_table in the call transcripts."
+ },
+ "a_ambiguity_resolution": {
+  "planted": "Karim: a refusal on the biggest balance makes the whole call no_promise/refused even if a smaller product has a promise. Priya: Dana's closing table rules (any promise -> promise). Never settled in brief-2.",
+  "resolution": "Priya's table won. closing.aggregation precedence is transfer > any_promise > all_notes_equal(paid) > first_note_not_equal. The extractor said so in spec warnings and extraction_notes.md ('Priya's table was used').",
+  "flagged_as_open_in_agent": false,
+  "verdict": "sensible default (the one NOTES.md expected) and surfaced in the build warnings; not visible to the agent at call time and not probed with a refuse-big/promise-small call.",
+  "other_conflicts_resolved": [
+   "brief-2 callback window overrides brief-1 (flagged; Thursday 14:00 kept only in prose, mismatch 4)",
+   "brief-2 hardship (note and continue) overrides brief-1 (close); support offer added (mismatch 10)",
+   "brief-2 add_note overrides 'this brief never uses add_note'",
+   "tool API three wrong answers vs brief two: brief used (confirmed in probes)",
+   "'already paid' stated twice in brief-2 -> one intent, no duplication"
+  ]
+ },
+ "b_online_test": {
+  "file": "/Users/melih/Desktop/build-the-builder/runs/rehearsal-20261011-132458/online_test.json",
+  "cases_generated": 5,
+  "cases_passed": 0,
+  "scored": 0,
+  "excluded": 5,
+  "case_ids": [
+   "identity_lockout",
+   "promise_full",
+   "amount_floor",
+   "third_party_callback",
+   "intent_no_talk_after_verification"
+  ],
+  "failure_classes": {
+   "infra": 5
+  },
+  "failure_cause": "GET /api/v2/simulations/<id> returned 504 for the whole batch; testing stopped, workflow unchanged",
+  "repairs_tried": 0,
+  "repairs_kept": 0,
+  "repairs_rolled_back": 0,
+  "kept": "baseline",
+  "skipped_kinds": [
+   "date clamping: the deadline itself is not a business day, so no promise could be recorded on it",
+   "multi-product: no carrier account has products with different deadlines"
+  ],
+  "note": "The date-clamping skip is itself a symptom of mismatch 1: with deadline = today + 24 = 2026-11-07 (a Saturday) the generator cannot place a promise on it. Build exit 0, degraded=true in run-record.json; the online test gave no signal, so the probes below are the only behavioural evidence."
+ },
+ "c_probes": {
+  "harness": "rehearsal/probe_runner.py -> tools/run_cases.py (persona_for, run_once, score_ledger, platform judge), probe ids mapped to carrier accounts PUB-01/02/03/05/06/07/08/09/11/13 for the bank session only; persona cache kept in rehearsal/.personas-probes.json",
+  "cases_file": "rehearsal/probe-cases.json (generator: rehearsal/make_probe_cases.py); expected values computed by hand from the briefs, not from the spec",
+  "probe_count": 10,
+  "coverage": {
+   "happy_path": "PROBE-01",
+   "date_past_deadline": "PROBE-02 (aged), PROBE-04 (recent)",
+   "amount_below_floor": "PROBE-03",
+   "repeated_wrong_identity": "PROBE-05, PROBE-06",
+   "third_party": "PROBE-07",
+   "refusal": "PROBE-08",
+   "multi_product": "PROBE-09, PROBE-10"
+  },
+  "strict_pass_ledger_and_platform_judge": {
+   "run1": "0/10",
+   "stability_rep1": "0/10",
+   "stability_rep2": "0/10"
+  },
+  "ledger_only_pass": {
+   "run1": {
+    "count": "6/10",
+    "ids": [
+     "PROBE-01",
+     "PROBE-02",
+     "PROBE-05",
+     "PROBE-06",
+     "PROBE-07",
+     "PROBE-08"
+    ]
+   },
+   "stability_rep1": {
+    "count": "7/10",
+    "ids": [
+     "PROBE-01",
+     "PROBE-02",
+     "PROBE-05",
+     "PROBE-06",
+     "PROBE-07",
+     "PROBE-08",
+     "PROBE-10"
+    ]
+   },
+   "stability_rep2": {
+    "count": "6/10",
+    "ids": [
+     "PROBE-01",
+     "PROBE-05",
+     "PROBE-06",
+     "PROBE-07",
+     "PROBE-08",
+     "PROBE-10"
+    ]
+   }
+  },
+  "why_strict_is_zero": "the platform judge was given my brief-derived checks; the first one (the first agent sentence names Nora and the recording) fails on all 30 calls (mismatch 5), and checks on thanks/goodbye and dates fail on others. Ledger failures are listed separately and are the objective ones.",
+  "ledger_failures_reproducible_3_of_3": [
+   "PROBE-03",
+   "PROBE-04",
+   "PROBE-09"
+  ],
+  "per_probe": {
+   "PROBE-01": {
+    "what": "happy path, full 420.00 today (card)",
+    "result": "ledger OK in 3/3; recorded 420.00 on 2026-10-14. Read-back is in ISO form ('2026-10-14'). run1: after create_promise the agent said nothing (no confirmation sentence, no goodbye); stability reps said both.",
+    "follows_brief": "mostly"
+   },
+   "PROBE-02": {
+    "what": "aged band, customer asks Sunday 25 Oct, deadline 21 Oct",
+    "result": "recorded 2100.00 on 2026-10-21 in 3/3 (correct date) but in all three runs the agent first said Sunday is not a business day and offered Monday 26 Oct (or went straight to 21 Oct). stab rep2: close_call had not landed when scored (ledger: no close).",
+    "follows_brief": "outcome yes, reasoning no"
+   },
+   "PROBE-03": {
+    "what": "personal loan, 150 offered, floor should be 243.00",
+    "result": "agent offered 243.00 (45% from prose), customer agreed, read-back 243.00, recorded 540.00 (the full amount) in 3/3. Agent did not tell the customer.",
+    "follows_brief": "no (recorded wrong amount)"
+   },
+   "PROBE-04": {
+    "what": "card, 12 days late, customer asks Sunday 1 Nov, correct deadline 26 Oct",
+    "result": "recorded 2026-11-05, 2026-10-20, 2026-11-02 in three runs; the agent offered 2026-11-07 (wrong deadline) in run1 and called Sundays non-business days. Never 10-26.",
+    "follows_brief": "no"
+   },
+   "PROBE-05": {
+    "what": "two wrong identity answers",
+    "result": "ended after exactly 2 wrong answers, said 'Please visit a Cedar Ridge branch.', no debt, close not_verified/failed in 3/3. No thanks or goodbye.",
+    "follows_brief": "yes except rule 46"
+   },
+   "PROBE-06": {
+    "what": "wrong phone, right phone, wrong DOB",
+    "result": "ended after 2 wrong answers in total in 3/3, not_verified/failed. No thanks or goodbye.",
+    "follows_brief": "yes except rule 46"
+   },
+   "PROBE-07": {
+    "what": "third party, Thursday 15:30 then 11:00",
+    "result": "no account info, no security questions, 15:30 rejected using the 10:00-14:00 Thursday limit, schedule_callback 2026-10-15 11:00, close not_reached/callback in 3/3. Closing is only 'Goodbye.' and the call opens with 'Is this Ms Costa?'.",
+    "follows_brief": "yes except rule 46"
+   },
+   "PROBE-08": {
+    "what": "customer refuses every offer (card 180.00, recent)",
+    "result": "3 persuasion attempts, no repeats, floor 21.60 (12%) computed from prose, no discount offered, add_note refused, close no_promise/refused in 3/3. Offer dates wrong (2026-11-07 instead of 11-02; third offer 10-21 instead of 10-20). Stab rep2 transcript shows a long goodbye loop.",
+    "follows_brief": "outcome yes, dates no"
+   },
+   "PROBE-09": {
+    "what": "two products, one date for all (Tue 20 Oct), loan deadline 18 Oct",
+    "result": "states both products first, asks the 'today' question once, one read-back, one 'Shall I record this?', plural confirmation sentence, two create_promise. But loan recorded on 10-20 instead of 10-18, and the read-back did not mention capping, 3/3.",
+    "follows_brief": "structure yes, dates no"
+   },
+   "PROBE-10": {
+    "what": "three products: card paid, car loan disputed, loan promised",
+    "result": "run1: agent closed the call at once as no_promise/refused with no notes and no promise (wrong). reps 1 and 2: notes paid(p1) and dispute(p3), promise 640.00 on 2026-10-14, close promise, correct. In both reps the agent then looped 'Thank you, goodbye.' with the persona for 60+ turns without ending the call (close_call came only when the sim stopped).",
+    "follows_brief": "unstable"
+   }
+  },
+  "transcripts_read_fully": [
+   "run1-PROBE-01",
+   "run1-PROBE-02",
+   "run1-PROBE-03",
+   "run1-PROBE-04",
+   "run1-PROBE-05",
+   "run1-PROBE-06",
+   "run1-PROBE-07",
+   "run1-PROBE-08",
+   "run1-PROBE-09",
+   "run1-PROBE-10",
+   "stab1-PROBE-10",
+   "stab2-PROBE-10",
+   "stab1-PROBE-04",
+   "stab2-PROBE-04",
+   "stab1-PROBE-03",
+   "stab2-PROBE-03",
+   "stab1-PROBE-09",
+   "stab2-PROBE-02"
+  ],
+  "transcript_dir": "results/rehearsal-transcripts/ (30 files, text, tool calls and node moves included)",
+  "brief_adherence_findings": {
+   "opening_sentence": "wrong order in 30/30 (question first, intro second)",
+   "forbidden_words_before_verification": "clean in 30/30",
+   "read_back_and_confirmation": "present in every promise call; asked once for multi-product; amounts/dates read in ISO form; the read-back is not what gets recorded in PROBE-03/04/09",
+   "confirmation_sentence": "exact singular and plural sentences used when a promise was recorded and the agent spoke; missing in run1 PROBE-01",
+   "closing": "thanks+goodbye missing on identity-failure and callback exits; a goodbye loop (no end_call) in PROBE-10 reps 1 and 2 and PROBE-08 rep 2",
+   "identity_limit": "exactly 2 wrong answers ends the check (6/6)",
+   "persuasion": "3 attempts with no repeats and no forbidden offers; wrong dates"
+  }
+ },
+ "d_stability_pass": {
+  "command": "rehearsal/probe_runner.py --reps 2",
+  "file": "results/rehearsal-probes-stability.json (stdout: results/rehearsal-probes-stability.stdout)",
+  "strict_pass_per_rep": {
+   "rep1": "0/10",
+   "rep2": "0/10"
+  },
+  "ledger_only_per_rep": {
+   "rep1": [
+    "PROBE-01",
+    "PROBE-02",
+    "PROBE-05",
+    "PROBE-06",
+    "PROBE-07",
+    "PROBE-08",
+    "PROBE-10"
+   ],
+   "rep2": [
+    "PROBE-01",
+    "PROBE-05",
+    "PROBE-06",
+    "PROBE-07",
+    "PROBE-08",
+    "PROBE-10"
+   ]
+  },
+  "ledger_stable_pass_both_reps": [
+   "PROBE-01",
+   "PROBE-05",
+   "PROBE-06",
+   "PROBE-07",
+   "PROBE-08",
+   "PROBE-10"
+  ],
+  "ledger_flaky": [
+   "PROBE-02"
+  ],
+  "ledger_failed_both_reps": [
+   "PROBE-03",
+   "PROBE-04",
+   "PROBE-09"
+  ],
+  "slowness": "platform reported median slowest agent turn 19 s (rep1) and 14 s (rep2); the runner warns scores may be low when the model is slow"
+ },
+ "incidents_and_manual_steps": {
+  "manual_step_needed_for_build": false,
+  "manual_steps_during_evaluation": [
+   "The first probe launch left simulation 98809114-... running on the platform for about 2 hours (runs retrying on 5xx). It held the workspace's single simulation slot; there is no documented cancel call so I waited for it to finish and did not call undocumented endpoints.",
+   "Added a GET-retry wrapper for 5xx inside my own rehearsal/probe_runner.py (freya.py untouched).",
+   "While blocked I built a fallback chat harness (rehearsal/chat_probe.py, chat route + LLM customer + LLM judge). Its runs are NOT used in any tally: the chat route disagrees with the simulation path (intro order, close_call outcome on chat end) and returned many 504s. Artifacts kept: results/rehearsal-probes-chat-*.json/stdout and results/rehearsal-chat-*.json.",
+   "One real data point was recovered from the stuck simulation: PROBE-03 call ed4180c7... (results/rehearsal-orphan-PROBE-03-*.json) showing amount 243 -> 540."
+  ],
+  "files_created": [
+   "rehearsal/probe-cases.json",
+   "rehearsal/make_probe_cases.py",
+   "rehearsal/probe_runner.py",
+   "rehearsal/chat_probe.py",
+   "rehearsal/write_evaluation.py",
+   "rehearsal/.personas-probes.json",
+   "rehearsal/evaluation.json",
+   "results/rehearsal-probes-run1.json",
+   "results/rehearsal-probes-stability.json",
+   "results/rehearsal-transcripts/*",
+   "results/rehearsal-chat-*",
+   "results/rehearsal-orphan-*",
+   "results/rehearsal-probes-chat-*"
+  ]
+ },
+ "summary": {
+  "real_workflow": true,
+  "spec_vs_brief_mismatches": 10,
+  "probe_tally": {
+   "strict_ledger_plus_platform_judge": "0/10 on run1, 0/10 and 0/10 on the two stability reps",
+   "ledger_only_run1": "6/10",
+   "ledger_only_stability": "7/10 and 6/10",
+   "consistent_ledger_failures": [
+    "PROBE-03",
+    "PROBE-04",
+    "PROBE-09"
+   ]
+  },
+  "manual_step_needed": "none for the build; the evaluation needed a wait-out of a stuck platform simulation and a retry wrapper (see incidents_and_manual_steps)"
+ }
+}

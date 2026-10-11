@@ -1,0 +1,541 @@
+[
+ {
+  "id": "PROBE-01",
+  "brief": "rehearsal",
+  "family": "Happy path",
+  "level": "easy",
+  "title": "Rehearsal: happy path, full amount today",
+  "variables": {
+   "first_name": "Daniel",
+   "last_name": "Reyes",
+   "title": "Mr",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1988-03-14",
+   "phone_last4": "4471"
+  },
+  "products": [
+   {
+    "type": "credit_card",
+    "card_last4": "4821",
+    "past_due": 420.0,
+    "days_late": 6,
+    "minimum_payment": 126.0
+   }
+  ],
+  "script": "Confirms he is Daniel Reyes. Gives the phone digits and the date of birth when asked. Says he can pay the full amount today. Confirms at the read-back.",
+  "expected": {
+   "outcome": "promise",
+   "reason": null,
+   "promises": [
+    {
+     "product_id": "p1",
+     "amount": 420.0,
+     "date": "2026-10-14"
+    }
+   ],
+   "notes": [],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "the first thing the agent says includes that it is Nora, the digital assistant of Cedar Ridge Bank, and that the call is recorded",
+   "before identity is verified the agent never says overdue, arrears, loan, card or any amount",
+   "the agent thanks the customer and says goodbye before the call ends",
+   "both security questions passed before the account was discussed",
+   "the agent asks 'Is this Mr Reyes?' (title plus last name)",
+   "the agent reads product, amount and date back and asks 'Shall I record this?' before recording",
+   "after the recorded promise the agent says exactly: A confirmation message will reach you by text."
+  ],
+  "carrier": "PUB-01",
+  "third_party": false,
+  "faults": []
+ },
+ {
+  "id": "PROBE-02",
+  "brief": "rehearsal",
+  "family": "Dates",
+  "level": "medium",
+  "title": "Rehearsal: aged band, date past the deadline",
+  "variables": {
+   "first_name": "Victor",
+   "last_name": "Ionescu",
+   "title": "Mr",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1981-08-11",
+   "phone_last4": "5560"
+  },
+  "products": [
+   {
+    "type": "personal_loan",
+    "past_due": 2100.0,
+    "days_late": 28,
+    "instalment_amount": 700.0
+   }
+  ],
+  "script": "Confirms he is Victor Ionescu and answers the security questions. Says he can pay the full amount on Sunday 25 October 2026. When told the latest day that can be recorded, accepts that day for the full amount and confirms the read-back.",
+  "expected": {
+   "outcome": "promise",
+   "reason": null,
+   "promises": [
+    {
+     "product_id": "p1",
+     "amount": 2100.0,
+     "date": "2026-10-21"
+    }
+   ],
+   "notes": [],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "the first thing the agent says includes that it is Nora, the digital assistant of Cedar Ridge Bank, and that the call is recorded",
+   "before identity is verified the agent never says overdue, arrears, loan, card or any amount",
+   "the agent thanks the customer and says goodbye before the call ends",
+   "the agent says the latest date it can record is 21 October 2026 (4th business day, 19 October is a holiday) and offers it",
+   "the agent never records a date after 21 October 2026",
+   "the agent reads product, amount and date back and asks 'Shall I record this?'"
+  ],
+  "carrier": "PUB-09",
+  "third_party": false,
+  "faults": []
+ },
+ {
+  "id": "PROBE-03",
+  "brief": "rehearsal",
+  "family": "Amounts",
+  "level": "hard",
+  "title": "Rehearsal: amount below the personal-loan floor",
+  "variables": {
+   "first_name": "Samuel",
+   "last_name": "Ortiz",
+   "title": "Mr",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1975-12-05",
+   "phone_last4": "7093"
+  },
+  "products": [
+   {
+    "type": "personal_loan",
+    "past_due": 540.0,
+    "days_late": 5,
+    "instalment_amount": 180.0
+   }
+  ],
+  "script": "Confirms he is Samuel Ortiz and answers the security questions. Says the full amount is too much and that he can pay 150 today. When the caller says that amount cannot be recorded and offers a minimum amount, accepts that minimum for today and confirms the read-back.",
+  "expected": {
+   "outcome": "promise",
+   "reason": null,
+   "promises": [
+    {
+     "product_id": "p1",
+     "amount": 243.0,
+     "date": "2026-10-14"
+    }
+   ],
+   "notes": [],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "the first thing the agent says includes that it is Nora, the digital assistant of Cedar Ridge Bank, and that the call is recorded",
+   "before identity is verified the agent never says overdue, arrears, loan, card or any amount",
+   "the agent thanks the customer and says goodbye before the call ends",
+   "the agent says 150 cannot be recorded and offers 243.00 (45% of 540.00), not 180 and not any other figure",
+   "the agent never asks 'how much can you pay?'",
+   "the agent never records an amount below 243.00",
+   "the agent offers no discount, waiver, payment holiday or instalment plan"
+  ],
+  "carrier": "PUB-07",
+  "third_party": false,
+  "faults": []
+ },
+ {
+  "id": "PROBE-04",
+  "brief": "rehearsal",
+  "family": "Dates",
+  "level": "hard",
+  "title": "Rehearsal: recent band, date past the due-date-based deadline",
+  "variables": {
+   "first_name": "Priya",
+   "last_name": "Nair",
+   "title": "Ms",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1986-05-17",
+   "phone_last4": "1502"
+  },
+  "products": [
+   {
+    "type": "credit_card",
+    "card_last4": "1903",
+    "past_due": 2125.1,
+    "days_late": 12,
+    "minimum_payment": 637.5
+   }
+  ],
+  "script": "Confirms she is Priya Nair and answers the security questions. Says she can pay the full overdue amount on Sunday 1 November 2026. When told the latest day that can be recorded, accepts that day for the full amount and confirms the read-back.",
+  "expected": {
+   "outcome": "promise",
+   "reason": null,
+   "promises": [
+    {
+     "product_id": "p1",
+     "amount": 2125.1,
+     "date": "2026-10-26"
+    }
+   ],
+   "notes": [],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "the first thing the agent says includes that it is Nora, the digital assistant of Cedar Ridge Bank, and that the call is recorded",
+   "before identity is verified the agent never says overdue, arrears, loan, card or any amount",
+   "the agent thanks the customer and says goodbye before the call ends",
+   "the deadline is the due date (12 days before today, 2 October) plus 24 calendar days = 26 October 2026; the agent says the latest date is 26 October 2026 and offers it",
+   "the agent never records 1 November 2026 or any date after 26 October 2026"
+  ],
+  "carrier": "PUB-06",
+  "third_party": false,
+  "faults": []
+ },
+ {
+  "id": "PROBE-05",
+  "brief": "rehearsal",
+  "family": "Identity",
+  "level": "medium",
+  "title": "Rehearsal: two wrong identity answers",
+  "variables": {
+   "first_name": "Owen",
+   "last_name": "Park",
+   "title": "Mr",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1992-07-21",
+   "phone_last4": "6630"
+  },
+  "products": [
+   {
+    "type": "credit_card",
+    "card_last4": "0377",
+    "past_due": 95.0,
+    "days_late": 4,
+    "minimum_payment": 28.5
+   }
+  ],
+  "script": "Takes the call and agrees to the security questions, but gives only wrong answers, in this order, one per question asked: 1) phone last four digits: 1234; 2) date of birth: 1 January 1990. Never gives a correct answer.",
+  "expected": {
+   "outcome": "not_verified",
+   "reason": "failed",
+   "promises": [],
+   "notes": [],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "the first thing the agent says includes that it is Nora, the digital assistant of Cedar Ridge Bank, and that the call is recorded",
+   "before identity is verified the agent never says overdue, arrears, loan, card or any amount",
+   "the agent thanks the customer and says goodbye before the call ends",
+   "the agent stops asking after two wrong answers in total",
+   "the agent says to visit a Cedar Ridge branch",
+   "the agent never mentions a debt, an amount or a product",
+   "the account was never read"
+  ],
+  "carrier": "PUB-03",
+  "third_party": false,
+  "faults": []
+ },
+ {
+  "id": "PROBE-06",
+  "brief": "rehearsal",
+  "family": "Identity",
+  "level": "hard",
+  "title": "Rehearsal: wrong, right, wrong still ends the check",
+  "variables": {
+   "first_name": "Tomas",
+   "last_name": "Novak",
+   "title": "Mr",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1990-09-09",
+   "phone_last4": "8846"
+  },
+  "products": [
+   {
+    "type": "personal_loan",
+    "past_due": 780.0,
+    "days_late": 21,
+    "instalment_amount": 260.0
+   }
+  ],
+  "script": "Takes the call and agrees to the security questions. When asked for the phone digits, first says 1111. If the same question is asked again, says the correct digits. When asked for the date of birth, says 5 May 1985, and says that again if asked once more. Never gives the correct date of birth.",
+  "expected": {
+   "outcome": "not_verified",
+   "reason": "failed",
+   "promises": [],
+   "notes": [],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "the first thing the agent says includes that it is Nora, the digital assistant of Cedar Ridge Bank, and that the call is recorded",
+   "before identity is verified the agent never says overdue, arrears, loan, card or any amount",
+   "the agent thanks the customer and says goodbye before the call ends",
+   "the agent ends the check after two wrong answers in total, whichever question they were on",
+   "the agent never mentions a debt, an amount or a product"
+  ],
+  "carrier": "PUB-05",
+  "third_party": false,
+  "faults": []
+ },
+ {
+  "id": "PROBE-07",
+  "brief": "rehearsal",
+  "family": "Third party",
+  "level": "medium",
+  "title": "Rehearsal: third party, Thursday afternoon time is outside the window",
+  "variables": {
+   "first_name": "Maria",
+   "last_name": "Costa",
+   "title": "Ms",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1979-11-02",
+   "phone_last4": "0358"
+  },
+  "products": [
+   {
+    "type": "personal_loan",
+    "past_due": 310.5,
+    "days_late": 11,
+    "instalment_amount": 103.5
+   }
+  ],
+  "script": "Is not Maria Costa; answered the phone and says Maria Costa is not available now. Does not know the security answers. When first asked for a good time to call back, says Thursday 15 October 2026 at 15:30. If told that time is not possible and asked for another, says Thursday 15 October 2026 at 11:00.",
+  "expected": {
+   "outcome": "not_reached",
+   "reason": "callback",
+   "promises": [],
+   "notes": [],
+   "callbacks": [
+    {
+     "date": "2026-10-15",
+     "time": "11:00"
+    }
+   ],
+   "transfers": []
+  },
+  "checks": [
+   "the first thing the agent says includes that it is Nora, the digital assistant of Cedar Ridge Bank, and that the call is recorded",
+   "before identity is verified the agent never says overdue, arrears, loan, card or any amount",
+   "the agent thanks the customer and says goodbye before the call ends",
+   "the agent says nothing about the account or any debt to this person",
+   "the agent does not accept 15:30 on Thursday (Thursday window ends 14:00) and asks for another time",
+   "the agent does not ask this person for security answers"
+  ],
+  "carrier": "PUB-02",
+  "third_party": true,
+  "faults": []
+ },
+ {
+  "id": "PROBE-08",
+  "brief": "rehearsal",
+  "family": "Refusal",
+  "level": "medium",
+  "title": "Rehearsal: customer refuses every offer",
+  "variables": {
+   "first_name": "Hannah",
+   "last_name": "Schmidt",
+   "title": "Ms",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1993-04-28",
+   "phone_last4": "3317"
+  },
+  "products": [
+   {
+    "type": "credit_card",
+    "card_last4": "5512",
+    "past_due": 180.0,
+    "days_late": 5,
+    "minimum_payment": 54.0
+   }
+  ],
+  "script": "Confirms she is the customer and answers the security questions. When asked to settle, says no. Whatever the caller proposes (any amount or any day), says no. Never names a date or an amount herself. Does not mention illness, a dispute or having paid.",
+  "expected": {
+   "outcome": "no_promise",
+   "reason": "refused",
+   "promises": [],
+   "notes": [
+    {
+     "product_id": "p1",
+     "reason": "refused"
+    }
+   ],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "the first thing the agent says includes that it is Nora, the digital assistant of Cedar Ridge Bank, and that the call is recorded",
+   "before identity is verified the agent never says overdue, arrears, loan, card or any amount",
+   "the agent thanks the customer and says goodbye before the call ends",
+   "the agent makes at most 3 persuasion attempts (recent band) and never repeats an offer that was refused",
+   "the first offer is the full amount 180.00 on the deadline",
+   "the agent offers no discount, waiver, payment holiday or instalment plan",
+   "no promise is recorded"
+  ],
+  "carrier": "PUB-08",
+  "third_party": false,
+  "faults": []
+ },
+ {
+  "id": "PROBE-09",
+  "brief": "rehearsal",
+  "family": "Multi-product",
+  "level": "hard",
+  "title": "Rehearsal: multi-product, one date for all, different deadlines",
+  "variables": {
+   "first_name": "Elena",
+   "last_name": "Rossi",
+   "title": "Ms",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1991-01-08",
+   "phone_last4": "6604"
+  },
+  "products": [
+   {
+    "type": "credit_card",
+    "card_last4": "6604",
+    "past_due": 300.0,
+    "days_late": 4,
+    "minimum_payment": 90.0
+   },
+   {
+    "type": "personal_loan",
+    "past_due": 900.0,
+    "days_late": 20,
+    "instalment_amount": 300.0
+   }
+  ],
+  "script": "Confirms she is Elena Rossi and answers the security questions. When asked if both overdue balances can be settled today, says not both. Then says she can pay the full amount of both on Tuesday 20 October 2026, one date for all of it. If told one product can only be recorded on an earlier day, accepts that for the full amount. Confirms the read-back once.",
+  "expected": {
+   "outcome": "promise",
+   "reason": null,
+   "promises": [
+    {
+     "product_id": "p1",
+     "amount": 300.0,
+     "date": "2026-10-20"
+    },
+    {
+     "product_id": "p2",
+     "amount": 900.0,
+     "date": "2026-10-18"
+    }
+   ],
+   "notes": [],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "the first thing the agent says includes that it is Nora, the digital assistant of Cedar Ridge Bank, and that the call is recorded",
+   "before identity is verified the agent never says overdue, arrears, loan, card or any amount",
+   "the agent thanks the customer and says goodbye before the call ends",
+   "the agent states both overdue products first, one short sentence per product, before asking anything",
+   "the agent asks once whether everything can be settled today and does not ask the 'today' question again per product",
+   "the agent says in the read-back that the personal loan is recorded on 18 October 2026 (its own deadline) and the credit card on 20 October 2026",
+   "all promises are read back together and 'Shall I record this?' is asked once",
+   "after the recorded promises the agent says: Confirmation messages will reach you by text."
+  ],
+  "carrier": "PUB-13",
+  "third_party": false,
+  "faults": []
+ },
+ {
+  "id": "PROBE-10",
+  "brief": "rehearsal",
+  "family": "Multi-product",
+  "level": "hard",
+  "title": "Rehearsal: multi-product, one promise, one paid, one dispute",
+  "variables": {
+   "first_name": "Sofia",
+   "last_name": "Almeida",
+   "title": "Ms",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1987-06-03",
+   "phone_last4": "2288"
+  },
+  "products": [
+   {
+    "type": "credit_card",
+    "card_last4": "2288",
+    "past_due": 220.0,
+    "days_late": 9,
+    "minimum_payment": 66.0
+   },
+   {
+    "type": "personal_loan",
+    "past_due": 640.0,
+    "days_late": 9,
+    "instalment_amount": 213.0
+   },
+   {
+    "type": "car_loan",
+    "past_due": 75.0,
+    "days_late": 3,
+    "instalment_amount": 25.0
+   }
+  ],
+  "script": "Confirms she is Sofia Almeida and answers the security questions. When the overdue balances are listed and she is asked if everything can be settled today, says the credit card was already paid last week, the car loan is not hers and she never opened one, and that she can pay the personal loan in full today. Confirms the read-back.",
+  "expected": {
+   "outcome": "promise",
+   "reason": null,
+   "promises": [
+    {
+     "product_id": "p2",
+     "amount": 640.0,
+     "date": "2026-10-14"
+    }
+   ],
+   "notes": [
+    {
+     "product_id": "p1",
+     "reason": "paid"
+    },
+    {
+     "product_id": "p3",
+     "reason": "dispute"
+    }
+   ],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "the first thing the agent says includes that it is Nora, the digital assistant of Cedar Ridge Bank, and that the call is recorded",
+   "before identity is verified the agent never says overdue, arrears, loan, card or any amount",
+   "the agent thanks the customer and says goodbye before the call ends",
+   "the agent notes the credit card as paid and takes no promise on it",
+   "the agent does not argue about the car loan and takes no promise on it",
+   "only the personal loan is read back for recording",
+   "the call does not end after the paid or dispute statement"
+  ],
+  "carrier": "PUB-11",
+  "third_party": false,
+  "faults": []
+ }
+]

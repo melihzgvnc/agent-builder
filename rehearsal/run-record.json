@@ -1,0 +1,114 @@
+{
+  "run_dir": "/Users/melih/Desktop/build-the-builder/runs/rehearsal-20261011-132458",
+  "slot": "rehearsal",
+  "model": "anthropic/claude-sonnet-5.5",
+  "dry": false,
+  "briefs": [
+    "/Users/melih/Desktop/build-the-builder/rehearsal/brief-1.md",
+    "/Users/melih/Desktop/build-the-builder/rehearsal/brief-2.md"
+  ],
+  "total_wall_seconds": 289.5,
+  "time_reported_real_seconds": 289.44,
+  "trace_duration_seconds": 289.29,
+  "budget_30min_seconds": 1800,
+  "within_30min": true,
+  "TOTAL_BUDGET_S": 1500.0,
+  "within_TOTAL_BUDGET_S": true,
+  "stages": [
+    {
+      "stage": "load_inputs",
+      "status": "ok",
+      "seconds": 0.0,
+      "budget_s": 10,
+      "over_under": "under"
+    },
+    {
+      "stage": "extract_spec",
+      "status": "ok",
+      "seconds": 104.44,
+      "budget_s": 540,
+      "over_under": "under"
+    },
+    {
+      "stage": "validate_spec",
+      "status": "ok",
+      "seconds": 0.0,
+      "budget_s": 10,
+      "over_under": "under"
+    },
+    {
+      "stage": "compile_workflow",
+      "status": "ok",
+      "seconds": 0.08,
+      "budget_s": 60,
+      "over_under": "under"
+    },
+    {
+      "stage": "lint",
+      "status": "ok",
+      "seconds": 0.0,
+      "budget_s": 30,
+      "over_under": "under"
+    },
+    {
+      "stage": "offline_checks",
+      "status": "ok",
+      "seconds": 0.08,
+      "budget_s": 120,
+      "over_under": "under"
+    },
+    {
+      "stage": "dry_run",
+      "status": "ok",
+      "seconds": 1.01,
+      "budget_s": 120,
+      "over_under": "under"
+    },
+    {
+      "stage": "save",
+      "status": "ok",
+      "seconds": 1.98,
+      "budget_s": 120,
+      "over_under": "under"
+    },
+    {
+      "stage": "read_back",
+      "status": "ok",
+      "seconds": 0.72,
+      "budget_s": 60,
+      "over_under": "under"
+    },
+    {
+      "stage": "export",
+      "status": "ok",
+      "seconds": 0.38,
+      "budget_s": 60,
+      "over_under": "under"
+    },
+    {
+      "stage": "smoke_test",
+      "status": "ok",
+      "seconds": 5.91,
+      "budget_s": 180,
+      "over_under": "under"
+    },
+    {
+      "stage": "online_test",
+      "status": "ok",
+      "seconds": 174.65,
+      "budget_s": 600,
+      "over_under": "under"
+    }
+  ],
+  "any_stage_over_budget": false,
+  "exit_code": 0,
+  "manual_action_needed": false,
+  "retried": false,
+  "killed_by_backend_outage": false,
+  "degraded": true,
+  "degraded_reason": "online_test: GET /api/v2/simulations/<id> returned 504; testing stopped, workflow unchanged. 0/0 scored, 5 cases excluded. Build itself completed with exit 0 and all stages ok.",
+  "workflow_id": "8ac9ad4e-a284-49d5-909d-f3e567064dab",
+  "agent_id": "c1e3a19b-5ac0-43b4-8fdd-33578a7b00cd",
+  "stdout": "/Users/melih/Desktop/build-the-builder/rehearsal/build.stdout",
+  "stderr": "/Users/melih/Desktop/build-the-builder/rehearsal/build.stderr"
+}
